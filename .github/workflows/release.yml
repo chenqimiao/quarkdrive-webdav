@@ -18,9 +18,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             use_cross: false
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            use_cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             use_cross: false
@@ -51,16 +48,7 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu') && matrix.target == 'x86_64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
-      - name: Install cross (for musl targets)
-        if: matrix.use_cross
-        run: cargo install cross
-
-      - name: Build (musl targets use cross)
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      - name: Build (other targets)
-        if: "!matrix.use_cross"
+      - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
