@@ -41,13 +41,16 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Install musl cross toolchain
-        if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+      - name: Install cross (for Linux targets)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cargo install cross
 
-      - name: Build
+      - name: Build (Linux targets use cross)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Build (non-Linux targets)
+        if: "!startsWith(matrix.os, 'ubuntu')"
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
