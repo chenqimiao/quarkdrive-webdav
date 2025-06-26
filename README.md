@@ -31,7 +31,7 @@
 ## 命令行启动
 
 ```bash
-quarkdrive-webdav --quark-cookie "你的cookie" -U "用户名" -W "密码" -p 8080
+quarkdrive-webdav --quark-cookie '你的cookie' -U '用户名' -W '密码' -p 8080
 ```
 
 
@@ -58,7 +58,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - QUARK_COOKIE='you quark cookie'
+      - QUARK_COOKIE=you quark cookie
       - WEBDAV_AUTH_USER=admin
       - WEBDAV_AUTH_PASSWORD=admin
 ```
