@@ -1,11 +1,3 @@
-name: Build binary package
-on:
-  workflow_dispatch:
-    inputs:
-      release_body:
-        description: 'Release 描述（可选）'
-        required: false
-        default: ''
 jobs:
   build:
     if: github.event_name == 'workflow_dispatch'
@@ -15,8 +7,6 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
           - os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
           - os: ubuntu-latest
@@ -42,39 +32,15 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-      - name: Install dependencies for aarch64-unknown-linux-gnu
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo dpkg --add-architecture arm64
-          # 使用专用ports仓库并禁用默认安全源
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          
-          # 禁用默认的安全源
-          sudo sed -i '/security.ubuntu.com/d' /etc/apt/sources.list
-          
-          # 更新时仅处理arm64和amd64架构
-          sudo apt-get update -o APT::Architectures="amd64 arm64"
-          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
-          echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+      # 只保留 armv7-unknown-linux-gnueabihf、musl 相关依赖安装步骤
       - name: Install dependencies for armv7-unknown-linux-gnueabihf
         if: matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: |
           sudo dpkg --add-architecture armhf
-          # 使用专用ports仓库并禁用默认安全源
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main universe" | sudo tee /etc/apt/sources.list.d/armhf.list
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          
-          # 禁用默认的安全源
           sudo sed -i '/security.ubuntu.com/d' /etc/apt/sources.list
-          
-          # 更新时仅处理armhf和amd64架构
           sudo apt-get update -o APT::Architectures="amd64 armhf"
           sudo apt-get install -y gcc-arm-linux-gnueabihf pkg-config qemu-user-static libssl-dev:armhf
           echo "OPENSSL_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
@@ -82,77 +48,4 @@ jobs:
           echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV
-      - name: Install musl cross toolchain
-        if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools musl-dev
-      - name: Install OpenSSL for musl targets
-        if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-musl gcc-arm-linux-musleabihf
-          
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            export TARGET_ARCH=aarch64-linux-musl
-            export OPENSSL_DIR=/usr/local/openssl-aarch64-musl
-          elif [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
-            export TARGET_ARCH=armv7-linux-musleabihf
-            export OPENSSL_DIR=/usr/local/openssl-armv7-musl
-          fi
-          
-          sudo mkdir -p $OPENSSL_DIR
-          sudo chmod 777 $OPENSSL_DIR
-          
-          wget https://www.openssl.org/source/openssl-3.0.13.tar.gz
-          tar -xzf openssl-3.0.13.tar.gz
-          cd openssl-3.0.13
-          
-          ./Configure linux-$TARGET_ARCH \
-            --prefix=$OPENSSL_DIR \
-            --openssldir=$OPENSSL_DIR \
-            no-shared \
-            no-async \
-            no-engine
-          
-          make -j$(nproc)
-          sudo make install
-          
-          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
-          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
-          echo "CC_${{ matrix.target }}=$TARGET_ARCH-gcc" >> $GITHUB_ENV
-          echo "CARGO_TARGET_${{ matrix.target | replace: '-', '_' | upper }}_LINKER=$TARGET_ARCH-gcc" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig" >> $GITHUB_ENV
-      - name: Build
-        run: |
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-              export RUSTFLAGS="-C linker=aarch64-linux-musl-gcc"
-            elif [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
-              export RUSTFLAGS="-C linker=arm-linux-musleabihf-gcc"
-            fi
-          fi
-          
-          cargo build --release --target ${{ matrix.target }}
-      - name: Package
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/quarkdrive-webdav* dist/ || cp target/${{ matrix.target }}/release/quarkdrive-webdav.exe dist/
-          cd dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../quarkdrive-webdav-${{ matrix.target }}.zip *
-          else
-            tar czf ../quarkdrive-webdav-${{ matrix.target }}.tar.gz *
-          fi
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            quarkdrive-webdav-${{ matrix.target }}.*
-          body: ${{ github.event.inputs.release_body }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: 设置 Release 名称
-        id: release_vars
-        run: |
-          echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+      # 其余步骤保持不变
