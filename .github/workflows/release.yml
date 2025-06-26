@@ -1,103 +1,82 @@
-name: Build binary package
-on:
-  workflow_dispatch:
-    inputs:
-      release_body:
-        description: 'Release 描述（可选）'
-        required: false
-        default: ''
-jobs:
-  build:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-gnu
-          - os: ubuntu-22.04
-            target: armv7-unknown-linux-gnueabihf
-          - os: ubuntu-22.04
-            target: aarch64-unknown-linux-musl
-          - os: ubuntu-22.04
-            target: armv7-unknown-linux-musleabihf
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: windows-latest
-            target: i686-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-      - name: Install dependencies for aarch64-unknown-linux-gnu
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo dpkg --add-architecture arm64
-          # 使用Ubuntu ports仓库替代默认源
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
-          echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-      - name: Install dependencies for armv7-unknown-linux-gnueabihf
-        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
-        run: |
-          sudo dpkg --add-architecture armhf
-          # 使用Ubuntu ports仓库替代默认源
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          sudo apt-get update
-          sudo apt-get install -y gcc-arm-linux-gnueabihf pkg-config qemu-user-static libssl-dev:armhf
-          echo "OPENSSL_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV
-      - name: Install musl cross toolchain
-        if: contains(matrix.target, 'musl')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-      - name: Package
-        run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/quarkdrive-webdav* dist/ || cp target/${{ matrix.target }}/release/quarkdrive-webdav.exe dist/
-          cd dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../quarkdrive-webdav-${{ matrix.target }}.zip *
-          else
-            tar czf ../quarkdrive-webdav-${{ matrix.target }}.tar.gz *
-          fi
-      - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            quarkdrive-webdav-${{ matrix.target }}.*
-          body: ${{ github.event.inputs.release_body }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: 设置 Release 名称
-        id: release_vars
-        run: |
-          echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+  你只需从 `matrix.include` 中删除 `armv7-unknown-linux-gnueabihf` 相关项，并移除对应的依赖安装步骤。如下所示：
+    
+    ```yaml
+  jobs:
+    build:
+      if: github.event_name == 'workflow_dispatch'
+      runs-on: ${{ matrix.os }}
+      strategy:
+        matrix:
+          include:
+            - os: ubuntu-22.04
+              target: x86_64-unknown-linux-gnu
+            - os: ubuntu-22.04
+              target: aarch64-unknown-linux-gnu
+            - os: ubuntu-22.04
+              target: aarch64-unknown-linux-musl
+            - os: ubuntu-22.04
+              target: armv7-unknown-linux-musleabihf
+            - os: windows-latest
+              target: x86_64-pc-windows-msvc
+            - os: windows-latest
+              target: i686-pc-windows-msvc
+            - os: macos-latest
+              target: x86_64-apple-darwin
+            - os: macos-latest
+              target: aarch64-apple-darwin
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+          with:
+            ref: ${{ github.ref_name }}
+        - name: Install Rust
+          uses: actions-rs/toolchain@v1
+          with:
+            toolchain: stable
+            target: ${{ matrix.target }}
+            override: true
+        - name: Install dependencies for aarch64-unknown-linux-gnu
+          if: matrix.target == 'aarch64-unknown-linux-gnu'
+          run: |
+            sudo dpkg --add-architecture arm64
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse" | sudo tee /etc/apt/sources.list.d/arm64.list
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+            echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+            sudo apt-get update
+            sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
+            echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+            echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
+            echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
+            echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+            echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+        - name: Install musl cross toolchain
+          if: contains(matrix.target, 'musl')
+          run: |
+            sudo apt-get update
+            sudo apt-get install -y musl-tools
+        - name: Build
+          run: cargo build --release --target ${{ matrix.target }}
+        - name: Package
+          run: |
+            mkdir dist
+            cp target/${{ matrix.target }}/release/quarkdrive-webdav* dist/ || cp target/${{ matrix.target }}/release/quarkdrive-webdav.exe dist/
+            cd dist
+            if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+              7z a ../quarkdrive-webdav-${{ matrix.target }}.zip *
+            else
+              tar czf ../quarkdrive-webdav-${{ matrix.target }}.tar.gz *
+            fi
+        - name: Upload Release Asset
+          uses: softprops/action-gh-release@v2
+          with:
+            files: |
+              quarkdrive-webdav-${{ matrix.target }}.*
+            body: ${{ github.event.inputs.release_body }}
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        - name: 设置 Release 名称
+          id: release_vars
+          run: |
+            echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+    ```
+    这样就移除了 `armv7-unknown-linux-gnueabihf` 的支持。
