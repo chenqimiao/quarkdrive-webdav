@@ -46,7 +46,6 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo dpkg --add-architecture arm64
-          # 使用专用ports仓库替代默认源
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe" | sudo tee /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
           echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
@@ -61,7 +60,6 @@ jobs:
         if: matrix.target == 'armv7-unknown-linux-gnueabihf'
         run: |
           sudo dpkg --add-architecture armhf
-          # 使用专用ports仓库替代默认源
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main universe" | sudo tee /etc/apt/sources.list.d/armhf.list
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
           echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
@@ -76,9 +74,60 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y musl-tools musl-dev
+      - name: Install OpenSSL for musl targets
+        if: contains(matrix.target, 'musl')
+        run: |
+          # 安装 musl 交叉编译器和 OpenSSL 开发依赖
+          sudo apt-get install -y gcc-aarch64-linux-musl gcc-arm-linux-musleabihf
+          
+          # 根据目标架构设置变量
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            export TARGET_ARCH=aarch64-linux-musl
+            export OPENSSL_DIR=/usr/local/openssl-aarch64-musl
+          elif [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
+            export TARGET_ARCH=armv7-linux-musleabihf
+            export OPENSSL_DIR=/usr/local/openssl-armv7-musl
+          fi
+          
+          # 创建安装目录
+          sudo mkdir -p $OPENSSL_DIR
+          sudo chmod 777 $OPENSSL_DIR
+          
+          # 下载并编译 OpenSSL
+          wget https://www.openssl.org/source/openssl-3.0.13.tar.gz
+          tar -xzf openssl-3.0.13.tar.gz
+          cd openssl-3.0.13
+          
+          ./Configure linux-$TARGET_ARCH \
+            --prefix=$OPENSSL_DIR \
+            --openssldir=$OPENSSL_DIR \
+            no-shared \
+            no-async \
+            no-engine
+          
+          make -j$(nproc)
+          sudo make install
+          
+          # 设置环境变量
+          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $GITHUB_ENV
+          echo "CC_${{ matrix.target }}=$TARGET_ARCH-gcc" >> $GITHUB_ENV
+          echo "CARGO_TARGET_${{ matrix.target | replace: '-', '_' | upper }}_LINKER=$TARGET_ARCH-gcc" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig" >> $GITHUB_ENV
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          # 设置 musl 目标的链接器
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+              export RUSTFLAGS="-C linker=aarch64-linux-musl-gcc"
+            elif [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
+              export RUSTFLAGS="-C linker=arm-linux-musleabihf-gcc"
+            fi
+          fi
+          
+          cargo build --release --target ${{ matrix.target }}
       - name: Package
         run: |
           mkdir dist
