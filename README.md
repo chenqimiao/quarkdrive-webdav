@@ -58,7 +58,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - QUARK_COOKIE='you quark cookie'
+      - QUARK_COOKIE=you quark cookie
       - WEBDAV_AUTH_USER=admin
       - WEBDAV_AUTH_PASSWORD=admin
 ```
