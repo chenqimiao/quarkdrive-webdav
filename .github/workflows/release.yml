@@ -41,6 +41,10 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
+      - name: Install OpenSSL dev (for Linux GNU targets)
+        if: startsWith(matrix.os, 'ubuntu') && !contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
+
       - name: Install cross (for Linux targets)
         if: startsWith(matrix.os, 'ubuntu')
         run: cargo install cross
