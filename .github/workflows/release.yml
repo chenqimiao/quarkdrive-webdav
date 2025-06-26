@@ -7,9 +7,6 @@ on:
         description: 'Release 描述（可选）'
         required: false
         default: ''
-  # push:
-  #   tags:
-  #     - '*'
 
 jobs:
   build:
@@ -20,14 +17,22 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # - os: ubuntu-latest
-          #   target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: i686-pc-windows-msvc
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-#          - os: windows-latest
-#            target: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout code
@@ -42,17 +47,35 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      # - name: Install dependencies for aarch64-unknown-linux-gnu
-      #   if: matrix.target == 'aarch64-unknown-linux-gnu'
-      #   run: |
-      #     sudo dpkg --add-architecture arm64
-      #     sudo apt-get update
-      #     sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
-      #     echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+      - name: Install dependencies for aarch64-unknown-linux-gnu
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
+          echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+
+      - name: Install dependencies for armv7-unknown-linux-gnueabihf
+        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabihf pkg-config qemu-user-static libssl-dev:armhf
+          echo "OPENSSL_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
+          echo "OPENSSL_LIB_DIR=/usr/lib/arm-linux-gnueabihf" >> $GITHUB_ENV
+          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV
+
+      - name: Install musl cross toolchain
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -81,6 +104,3 @@ jobs:
         id: release_vars
         run: |
           echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-
-      # 你可以在后续创建 Release 的步骤中使用 ${{ steps.release_vars.outputs.name }} 作为 release 名称
-      # ${{ github.event.inputs.release_body }} 可作为 release 描述
