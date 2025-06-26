@@ -17,16 +17,22 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            use_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
+            use_cross: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            use_cross: false
           - os: windows-latest
             target: i686-pc-windows-msvc
+            use_cross: false
           - os: macos-latest
             target: x86_64-apple-darwin
+            use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            use_cross: false
 
     steps:
       - name: Checkout code
@@ -42,19 +48,19 @@ jobs:
           override: true
 
       - name: Install OpenSSL dev (for Linux GNU targets)
-        if: startsWith(matrix.os, 'ubuntu') && !contains(matrix.target, 'musl')
+        if: startsWith(matrix.os, 'ubuntu') && matrix.target == 'x86_64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config
 
-      - name: Install cross (for Linux targets)
-        if: startsWith(matrix.os, 'ubuntu')
+      - name: Install cross (for musl targets)
+        if: matrix.use_cross
         run: cargo install cross
 
-      - name: Build (Linux targets use cross)
-        if: startsWith(matrix.os, 'ubuntu')
+      - name: Build (musl targets use cross)
+        if: matrix.use_cross
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Build (non-Linux targets)
-        if: "!startsWith(matrix.os, 'ubuntu')"
+      - name: Build (other targets)
+        if: "!matrix.use_cross"
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
