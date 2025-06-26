@@ -17,12 +17,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-20.04
-            target: armv7-unknown-linux-gnueabihf
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
-          - os: ubuntu-20.04
-            target: armv7-unknown-linux-musleabihf
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           - os: windows-latest
@@ -44,38 +40,6 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-
-      - name: Install dependencies for armv7-unknown-linux-gnueabihf
-        if: matrix.target == 'armv7-unknown-linux-gnueabihf'
-        run: |
-          sudo dpkg --add-architecture armhf
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal main universe" | sudo tee /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal-updates main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal-security main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          sudo sed -i '/security.ubuntu.com/d' /etc/apt/sources.list
-          sudo apt-get update -o APT::Architectures="amd64 armhf"
-          sudo apt-get install -y gcc-arm-linux-gnueabihf pkg-config qemu-user-static libssl-dev:armhf
-          echo "OPENSSL_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV
-
-      - name: Install dependencies for armv7-unknown-linux-musleabihf
-        if: matrix.target == 'armv7-unknown-linux-musleabihf'
-        run: |
-          sudo dpkg --add-architecture armhf
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal main universe" | sudo tee /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal-updates main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports focal-security main universe" | sudo tee -a /etc/apt/sources.list.d/armhf.list
-          sudo sed -i '/security.ubuntu.com/d' /etc/apt/sources.list
-          sudo apt-get update -o APT::Architectures="amd64 armhf"
-          sudo apt-get install -y gcc-arm-linux-gnueabihf pkg-config qemu-user-static libssl-dev:armhf
-          echo "OPENSSL_DIR=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/arm-linux-gnueabihf" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig" >> $GITHUB_ENV
 
       - name: Install musl cross toolchain
         if: contains(matrix.target, 'musl')
