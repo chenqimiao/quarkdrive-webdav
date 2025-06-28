@@ -20,8 +20,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          # - os: ubuntu-latest
-          #   target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
           - os: macos-latest
             target: x86_64-apple-darwin
           - os: macos-latest
@@ -39,23 +39,29 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
 
-      # - name: Install dependencies for aarch64-unknown-linux-gnu
-      #   if: matrix.target == 'aarch64-unknown-linux-gnu'
-      #   run: |
-      #     sudo dpkg --add-architecture arm64
-      #     sudo apt-get update
-      #     sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
-      #     echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+      - name: Install OpenSSL (x86_64-unknown-linux-gnu)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Install cross
+        run: cargo install cross
+
+      - name: Add macOS target
+        if: contains(matrix.target, 'apple-darwin')
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build (cross for Linux, cargo for others)
+        run: |
+          if [[ "${{ matrix.target }}" == *"linux-gnu"* ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      # - name: Build
+      #   if: matrix.target != 'aarch64-unknown-linux-gnu'
+      #   run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
