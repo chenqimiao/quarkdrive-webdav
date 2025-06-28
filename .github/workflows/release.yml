@@ -47,8 +47,13 @@ jobs:
       - name: Install cross
         run: cargo install cross
 
-      - name: Build with cross
-        run: cross build --release --target ${{ matrix.target }}
+      - name: Build (cross for Linux, cargo for others)
+        run: |
+          if [[ "${{ matrix.target }}" == *"linux-gnu"* ]]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       # - name: Install dependencies for aarch64-unknown-linux-gnu
       #   if: matrix.target == 'aarch64-unknown-linux-gnu'
