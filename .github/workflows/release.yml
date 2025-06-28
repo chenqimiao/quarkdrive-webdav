@@ -47,6 +47,10 @@ jobs:
       - name: Install cross
         run: cargo install cross
 
+      - name: Add macOS target
+        if: contains(matrix.target, 'apple-darwin')
+        run: rustup target add ${{ matrix.target }}
+
       - name: Build (cross for Linux, cargo for others)
         run: |
           if [[ "${{ matrix.target }}" == *"linux-gnu"* ]]; then
@@ -55,25 +59,9 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
-      - name: Add macOS target
-        if: contains(matrix.target, 'apple-darwin')
-        run: rustup target add ${{ matrix.target }}
-
-      # - name: Install dependencies for aarch64-unknown-linux-gnu
-      #   if: matrix.target == 'aarch64-unknown-linux-gnu'
-      #   run: |
-      #     sudo dpkg --add-architecture arm64
-      #     sudo apt-get update
-      #     sudo apt-get install -y gcc-aarch64-linux-gnu pkg-config qemu-user-static libssl-dev:arm64
-      #     echo "OPENSSL_DIR=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
-      #     echo "OPENSSL_INCLUDE_DIR=/usr/include/openssl" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
-      #     echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-
-      - name: Build
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
-        run: cargo build --release --target ${{ matrix.target }}
+      # - name: Build
+      #   if: matrix.target != 'aarch64-unknown-linux-gnu'
+      #   run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         run: |
