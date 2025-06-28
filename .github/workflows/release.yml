@@ -55,6 +55,10 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      - name: Add macOS target
+        if: contains(matrix.target, 'apple-darwin')
+        run: rustup target add ${{ matrix.target }}
+
       # - name: Install dependencies for aarch64-unknown-linux-gnu
       #   if: matrix.target == 'aarch64-unknown-linux-gnu'
       #   run: |
