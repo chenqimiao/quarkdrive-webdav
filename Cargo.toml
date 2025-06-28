@@ -46,6 +46,7 @@ tracing-subscriber = {version = "0.3.19", features = ["env-filter"]}
 signal-hook = {version = "0.3.18", features = ["default"]}
 signal-hook-tokio = "0.3.1"
 openssl-probe = {version = "0.1.6", optional = true}
+openssl = { version = "0.10.73", features = ["vendored"] }
 dirs = "6.0.0"
 serde_json = "1.0.140"
 atty = "0.2.14"
