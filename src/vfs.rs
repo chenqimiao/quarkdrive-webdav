@@ -554,33 +554,38 @@ impl QuarkDavFile {
             // TODO ..
            // let upload_buffer_size = self.fs.upload_buffer_size as u64;
             // let chunk_count =
-                size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
+             //   size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
             // self.upload_state.chunk_count = chunk_count;
             let res = self
                 .fs
                 .drive
-                .up_pre(&self.parent_file_id, size, &self.file.file_name, "application/octet-stream", chunk_count)
+                .up_pre(&self.file.file_name, size, &self.parent_file_id)
                 .await
                 .map_err(|err| {
-                    error!(file_name = %self.file.name, error = %err, "create file with proof failed");
+                    error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
                     FsError::GeneralFailure
                 })?;
-            self.file.id = res.file_id.clone();
-            let Some(upload_id) = res.upload_id else {
+            self.file.fid = res.data.fid.clone();
+            let Some(upload_id) = res.data.upload_id else {
                 error!("create file with proof failed: missing upload_id");
                 return Err(FsError::GeneralFailure);
             };
             self.upload_state.upload_id = upload_id;
-            let upload_urls: Vec<_> = res
-                .part_info_list
-                .into_iter()
-                .map(|x| x.upload_url)
-                .collect();
-            if upload_urls.is_empty() {
-                error!(file_id = %self.file.id, file_name = %self.file.name, "empty upload urls");
-                return Err(FsError::GeneralFailure);
+            // let upload_urls: Vec<_> = res
+            //     .part_info_list
+            //     .into_iter()
+            //     .map(|x| x.upload_url)
+            //     .collect();
+            // if upload_urls.is_empty() {
+            //     error!(file_id = %self.file.id, file_name = %self.file.name, "empty upload urls");
+            //     return Err(FsError::GeneralFailure);
+            // }
+            // self.upload_state.upload_urls = upload_urls;
+            
+            if res.data.finish {
+                // 秒传
+                return Ok(false);
             }
-            self.upload_state.upload_urls = upload_urls;
         }
         Ok(true)
     }

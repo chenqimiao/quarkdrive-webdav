@@ -93,6 +93,19 @@ pub struct MoveFileRequest {
     pub to_pdir_fid: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct UpPreRequest {
+    pub file_name: String,
+    pub size: u64,
+    pub pdir_fid: String,
+    pub format_type: String,
+    pub ccp_hash_update: bool,
+    pub l_created_at: u64,
+    pub l_updated_at: u64,
+    pub parallel_upload: bool, 
+    pub dir_name: String,
+}
+
 
 pub type GetFilesResponse = Response<FilesData, FilesMetadata>;
 
@@ -107,6 +120,7 @@ pub type RenameFileResponse = Response<EmptyData, EmptyMetadata>;
 pub type CommonResponse = Response<EmptyData, EmptyMetadata>;
 
 pub type GetSpaceInfoResponse = Response<GetSpaceInfoResponseData, EmptyMetadata>;
+pub type UpPreResponse = Response<UpPreResponseData, UpPreResponseMetaData>;
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -195,6 +209,26 @@ pub struct GetSpaceInfoResponseData {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetSpaceInfoResponseMetaData {
 
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpPreResponseData {
+    pub finish: bool,
+    pub task_id: String,
+    pub upload_id: Option<String>,
+    pub auth_info: String,
+    pub upload_url: String,
+    pub obj_key: String,
+    pub fid: String,
+    pub bucket: String,
+    pub format_type: String,
+    pub auth_info_expried: u64,
+
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpPreResponseMetaData {
+    pub part_size: u64,
+    pub part_thread: u32
 }
 
 impl From<GetFilesResponse> for QuarkFiles {

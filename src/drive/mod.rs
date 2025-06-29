@@ -310,7 +310,7 @@ impl QuarkDrive {
     pub async fn rename_file(&self, file_id: &str, name: &str) -> Result<()> {
         debug!(file_id = %file_id, name = %name, "rename file");
         let req = RenameFileRequest {
-            fid: file_id.to_string(), 
+            fid: file_id.to_string(),
             file_name: name.to_string(),
         };
         let res: RenameFileResponse = self
@@ -344,7 +344,7 @@ impl QuarkDrive {
             )
             .await?
             .context("expect response")?;
-        
+
         if res.status != 200 {
             return Err(anyhow::anyhow!("delete file failed: {}", res.message));
         }
@@ -405,7 +405,7 @@ impl QuarkDrive {
             )
             .await?
             .context("expect response")?;
-        
+
         if res.status != 200 {
             return Err(anyhow::anyhow!("delete file failed: {}", res.message));
         }
@@ -413,6 +413,65 @@ impl QuarkDrive {
             res.data.use_capacity,
             res.data.total_capacity,
         ))
+    }
+
+    pub async fn up_pre(&self, file_name: &str, size: u64, pdir_fid: &str) -> Result<UpPreResponse> {
+
+        let format_type = get_format_type(file_name);
+
+        let req = UpPreRequest {
+            file_name: file_name.to_string(),
+            size,
+            pdir_fid: pdir_fid.to_string(),
+            format_type: format_type.to_string(),
+            ccp_hash_update: true,
+            l_created_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64,
+            l_updated_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64,
+            // 上传文件夹？待确认
+            dir_name: "".to_string(),
+            parallel_upload:true,
+        };
+
+        let res: UpPreResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/pre?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
+}
+
+
+fn get_format_type(file_name: &str) -> &str {
+    if let Some(ext) = file_name.rsplit('.').next() {
+        let ext = ext.to_lowercase();
+        match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "mp4" => "video/mp4",
+            "avi" => "video/x-msvideo",
+            "mov" => "video/quicktime",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "pdf" => "application/pdf",
+            "doc" | "docx" => "application/msword",
+            "xls" | "xlsx" => "application/vnd.ms-excel",
+            "ppt" | "pptx" => "application/vnd.ms-powerpoint",
+            "txt" => "text/plain",
+            "zip" => "application/zip",
+            "rar" => "application/vnd.rar",
+            "7z" => "application/x-7z-compressed",
+            _ => "application/octet-stream",
+        }
+    } else {
+        "application/octet-stream"
     }
 }
 
