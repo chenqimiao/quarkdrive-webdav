@@ -205,7 +205,7 @@ impl QuarkDrive {
                         | StatusCode::SERVICE_UNAVAILABLE
                         | StatusCode::GATEWAY_TIMEOUT),
                     ) => {
-                        time::sleep(Duration::from_secs(1)).await;
+                        time::sleep(Duration::from_secs(2)).await;
                         let res = self
                             .client
                             .post(url)
@@ -302,6 +302,118 @@ impl QuarkDrive {
         Ok(res.bytes().await?)
     }
 
+    pub async fn remove_file(&self, file_id: &str, trash: bool) -> Result<()> {
+        // no untrash api in quark
+        self.delete_file(file_id).await?;
+        Ok(())
+    }
+    pub async fn rename_file(&self, file_id: &str, name: &str) -> Result<()> {
+        debug!(file_id = %file_id, name = %name, "rename file");
+        let req = RenameFileRequest {
+            fid: file_id.to_string(), 
+            file_name: name.to_string(),
+        };
+        let res: RenameFileResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/rename?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+            )
+            .await?
+            .context("expect response")?;
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+    pub async fn move_file(
+        &self,
+        file_id: &str,
+        to_parent_file_id: &str,
+    ) -> Result<()> {
+        debug!(file_id = %file_id, to_parent_file_id = %to_parent_file_id, "move file");
+        let req = MoveFileRequest {
+            filelist: vec![file_id.to_string()],
+            to_pdir_fid: to_parent_file_id.to_string(),
+        };
+        let res: CommonResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/move?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+            )
+            .await?
+            .context("expect response")?;
+        
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+    async fn delete_file(&self, file_id: &str) -> Result<()> {
+        debug!(file_id = %file_id, "delete file");
+        let req = DeleteFilesRequest {
+            action_type: 2u8,
+            exclude_fids: vec![],
+            filelist: vec![file_id.to_string()],
+        };
+        let res: DeleteFilesResponse = self
+            .post_request(
+                format!(
+                    "{}/1/clouddrive/file/delete?pr=ucpro&fr=pc",
+                    self.config.api_base_url
+                ),
+                &req,
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+
+    pub async fn create_folder(&self, parent_file_id: &str, name: &str) -> Result<()> {
+        debug!(parent_file_id = %parent_file_id, name = %name, "create folder");
+        let req = CreateFolderRequest {
+            pdir_fid: parent_file_id.to_string(),
+            file_name: name.to_string(),
+            dir_path: "".to_string(),
+            dir_init_lock: false,
+        };
+        let res: CreateFolderResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+            )
+            .await?
+            .context("expect response")?;
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+    pub async fn get_quota(&self) -> Result<(u64, u64)> {
+        let res: GetSpaceInfoResponse = self
+            .get_request(
+                format!("{}/1/clouddrive/member?pr=ucpro&fr=pc&uc_param_str=&fetch_subscribe=true&_ch=home&fetch_identity=true", self.config.api_base_url),
+            )
+            .await?
+            .context("expect response")?;
+        
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok((
+            res.data.use_capacity,
+            res.data.total_capacity,
+        ))
+    }
 }
 
 #[cfg(test)]

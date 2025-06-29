@@ -104,7 +104,7 @@ impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
                     _ => {
                         return Ok(Response::builder()
                             .status(401)
-                            .header("WWW-Authenticate", "Basic realm=\"quarkdriver-webdav\"")
+                            .header("WWW-Authenticate", "Basic realm=\"quarkdrive-webdav\"")
                             .body(Body::from("Authentication required"))
                             .unwrap());
                     }

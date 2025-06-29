@@ -20,6 +20,7 @@ use crate::{
     cache::Cache,
     drive::{QuarkDrive, QuarkFile},
 };
+use bytes::BufMut;
 
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
@@ -243,6 +244,22 @@ impl DavFileSystem for QuarkDriveFileSystem {
         };
         debug!(path = %path.display(), prop = %prop_name, "fs: get_prop");
         async move {
+            if prop.namespace.as_deref() == Some("http://owncloud.org/ns")
+                && prop.name == "checksums"
+            {
+                let file = self.get_file(path).await?.ok_or(FsError::NotFound)?;
+                if let Some(sha1) = file.content_hash {
+                    let xml = format!(
+                        r#"<?xml version="1.0"?>
+                        <oc:checksums xmlns:d="DAV:" xmlns:nc="http://nextcloud.org/ns" xmlns:oc="http://owncloud.org/ns">
+                            <oc:checksum>sha1:{}</oc:checksum>
+                        </oc:checksums>
+                    "#,
+                        sha1
+                    );
+                    return Ok(xml.into_bytes());
+                }
+            }
             Err(FsError::NotImplemented)
         }
             .boxed()
@@ -251,10 +268,187 @@ impl DavFileSystem for QuarkDriveFileSystem {
     fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
         debug!("fs: get_quota");
         async move {
-            Err(FsError::NotImplemented)
+            let (used, total) = self.drive.get_quota().await.map_err(|err| {
+                error!(error = %err, "get quota failed");
+                FsError::GeneralFailure
+            })?;
+            Ok((used, Some(total)))
         }
             .boxed()
     }
+
+    fn create_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+        let path = self.normalize_dav_path(dav_path);
+        debug!(path = %path.display(), "fs: create_dir");
+        async move {
+            if self.read_only {
+                return Err(FsError::Forbidden);
+            }
+
+            let parent_path = path.parent().ok_or(FsError::NotFound)?;
+            let parent_file = self
+                .get_file(parent_path.to_path_buf())
+                .await?
+                .ok_or(FsError::NotFound)?;
+            if parent_file.dir {
+                return Err(FsError::Forbidden);
+            }
+            if let Some(name) = path.file_name() {
+                let name = name.to_string_lossy().into_owned();
+                self.drive
+                    .create_folder(&parent_file.fid, &name)
+                    .await
+                    .map_err(|err| {
+                        error!(path = %path.display(), error = %err, "create folder failed");
+                        FsError::GeneralFailure
+                    })?;
+                self.dir_cache.invalidate(parent_path).await;
+                Ok(())
+            } else {
+                Err(FsError::Forbidden)
+            }
+        }
+            .boxed()
+    }
+
+
+    fn remove_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+        let path = self.normalize_dav_path(dav_path);
+        debug!(path = %path.display(), "fs: remove_dir");
+        async move {
+            if self.read_only {
+                return Err(FsError::Forbidden);
+            }
+
+            let file = self
+                .get_file(path.clone())
+                .await?
+                .ok_or(FsError::NotFound)?;
+            if file.dir {
+                return Err(FsError::Forbidden);
+            }
+            self.drive
+                .remove_file(&file.fid, !self.no_trash)
+                .await
+                .map_err(|err| {
+                    error!(path = %path.display(), error = %err, "remove directory failed");
+                    FsError::GeneralFailure
+                })?;
+            self.dir_cache.invalidate(&path).await;
+            self.dir_cache.invalidate_parent(&path).await;
+            Ok(())
+        }
+            .boxed()
+    }
+
+    fn remove_file<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+        let path = self.normalize_dav_path(dav_path);
+        debug!(path = %path.display(), "fs: remove_file");
+        async move {
+            if self.read_only {
+                return Err(FsError::Forbidden);
+            }
+
+            let file = self
+                .get_file(path.clone())
+                .await?
+                .ok_or(FsError::NotFound)?;
+            if !file.file {
+                return Err(FsError::Forbidden);
+            }
+            self.drive
+                .remove_file(&file.fid, !self.no_trash)
+                .await
+                .map_err(|err| {
+                    error!(path = %path.display(), error = %err, "remove file failed");
+                    FsError::GeneralFailure
+                })?;
+            self.dir_cache.invalidate_parent(&path).await;
+            Ok(())
+        }
+            .boxed()
+    }
+
+    fn copy<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<()> {
+        // not support by quark api
+        async move {
+            Err(FsError::NotImplemented)
+        }.boxed()
+    }
+
+    fn rename<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<()> {
+        let from = self.normalize_dav_path(from_dav);
+        let to = self.normalize_dav_path(to_dav);
+        debug!(from = %from.display(), to = %to.display(), "fs: rename");
+        async move {
+            if self.read_only {
+                return Err(FsError::Forbidden);
+            }
+
+            let is_dir;
+            if from.parent() == to.parent() {
+                // rename
+                if let Some(name) = to.file_name() {
+                    let file = self
+                        .get_file(from.clone())
+                        .await?
+                        .ok_or(FsError::NotFound)?;
+                    is_dir = file.dir;
+                    let name = name.to_string_lossy().into_owned();
+                    self.drive
+                        .rename_file(&file.fid, &name)
+                        .await
+                        .map_err(|err| {
+                            error!(from = %from.display(), to = %to.display(), error = %err, "rename file failed");
+                            FsError::GeneralFailure
+                        })?;
+                } else {
+                    return Err(FsError::Forbidden);
+                }
+            } else {
+                // move
+                let file = self
+                    .get_file(from.clone())
+                    .await?
+                    .ok_or(FsError::NotFound)?;
+                is_dir = file.dir;
+                let to_parent_file = self
+                    .get_file(to.parent().unwrap().to_path_buf())
+                    .await?
+                    .ok_or(FsError::NotFound)?;
+                let new_name = to_dav.file_name();
+                self.drive
+                    .move_file(&file.fid, &to_parent_file.fid)
+                    // then rename ...
+                    .await
+                    .map_err(|err| {
+                        error!(from = %from.display(), to = %to.display(), error = %err, "move file failed");
+                        FsError::GeneralFailure
+                    })?;
+                if let Some(to_name) = new_name {
+                    if let Some(from_name) = from_dav.file_name(){
+                        if from_name != to_name {
+                            self.drive.rename_file(&file.fid, to_name)
+                                .await
+                                .map_err(|err| {
+                                    error!(from = %from.display(), to = %to.display(), error = %err, "rename file after move failed");
+                                    FsError::GeneralFailure
+                                })?;
+                        }
+                    }
+                }
+            }
+
+            if is_dir {
+                self.dir_cache.invalidate(&from).await;
+            }
+            self.dir_cache.invalidate_parent(&from).await;
+            self.dir_cache.invalidate_parent(&to).await;
+            Ok(())
+        }
+            .boxed()
+    }
+
 }
 
 #[derive(Debug, Clone)]
@@ -328,6 +522,136 @@ impl QuarkDavFile {
             http_download: false,
         }
     }
+    async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
+        if self.upload_state.chunk_count == 0 {
+            let size = self.upload_state.size;
+            debug!(file_name = %self.file.file_name, size = size, "prepare for upload");
+            if !self.file.fid.is_empty() {
+                if let Some(content_hash) = self.file.content_hash.as_ref() {
+                    if let Some(sha1) = self.upload_state.sha1.as_ref() {
+                        if content_hash.eq_ignore_ascii_case(sha1) {
+                            debug!(file_name = %self.file.file_name, sha1 = %sha1, "skip uploading same content hash file");
+                            return Ok(false);
+                        }
+                    }
+                }
+                if self.fs.skip_upload_same_size && self.file.size == size {
+                    debug!(file_name = %self.file.file_name, size = size, "skip uploading same size file");
+                    return Ok(false);
+                }
+                // existing file, delete before upload
+                if let Err(err) = self
+                    .fs
+                    .drive
+                    .remove_file(&self.file.fid, !self.fs.no_trash)
+                    .await
+                {
+                    error!(file_name = %self.file.file_name, error = %err, "delete file before upload failed");
+                }
+            }
+            // 由云端计算
+            // 除了 size 和sha1 其余由云端获得
+            // TODO ..
+           // let upload_buffer_size = self.fs.upload_buffer_size as u64;
+            // let chunk_count =
+                size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
+            // self.upload_state.chunk_count = chunk_count;
+            let res = self
+                .fs
+                .drive
+                .up_pre(&self.parent_file_id, size, &self.file.file_name, "application/octet-stream", chunk_count)
+                .await
+                .map_err(|err| {
+                    error!(file_name = %self.file.name, error = %err, "create file with proof failed");
+                    FsError::GeneralFailure
+                })?;
+            self.file.id = res.file_id.clone();
+            let Some(upload_id) = res.upload_id else {
+                error!("create file with proof failed: missing upload_id");
+                return Err(FsError::GeneralFailure);
+            };
+            self.upload_state.upload_id = upload_id;
+            let upload_urls: Vec<_> = res
+                .part_info_list
+                .into_iter()
+                .map(|x| x.upload_url)
+                .collect();
+            if upload_urls.is_empty() {
+                error!(file_id = %self.file.id, file_name = %self.file.name, "empty upload urls");
+                return Err(FsError::GeneralFailure);
+            }
+            self.upload_state.upload_urls = upload_urls;
+        }
+        Ok(true)
+    }
+
+    async fn maybe_upload_chunk(&mut self, remaining: bool) -> Result<(), FsError> {
+        let chunk_size = if remaining {
+            // last chunk size maybe less than upload_buffer_size
+            self.upload_state.buffer.remaining()
+        } else {
+            self.fs.upload_buffer_size
+        };
+        let current_chunk = self.upload_state.chunk;
+        if chunk_size > 0
+            && self.upload_state.buffer.remaining() >= chunk_size
+            && current_chunk <= self.upload_state.chunk_count
+        {
+            let chunk_data = self.upload_state.buffer.split_to(chunk_size);
+            debug!(
+                file_id = %self.file.fid,
+                file_name = %self.file.file_name,
+                size = self.upload_state.size,
+                "upload part {}/{}",
+                current_chunk,
+                self.upload_state.chunk_count
+            );
+            let mut upload_url = &self.upload_state.upload_urls[current_chunk as usize - 1];
+            let upload_data = chunk_data.freeze();
+            let mut res = self.fs.drive.upload(upload_url, upload_data.clone()).await;
+            if let Err(ref err) = res {
+                if err.to_string().contains("expired") {
+                    warn!(
+                        file_id = %self.file.id,
+                        file_name = %self.file.name,
+                        upload_url = %upload_url,
+                        "upload url expired"
+                    );
+                    if let Ok(part_info_list) = self
+                        .fs
+                        .drive
+                        .get_upload_url(
+                            &self.file.id,
+                            &self.upload_state.upload_id,
+                            self.upload_state.chunk_count,
+                        )
+                        .await
+                    {
+                        let upload_urls: Vec<_> =
+                            part_info_list.into_iter().map(|x| x.upload_url).collect();
+                        self.upload_state.upload_urls = upload_urls;
+                        upload_url = &self.upload_state.upload_urls[current_chunk as usize - 1];
+                        // retry upload
+                        res = self.fs.drive.upload(upload_url, upload_data).await;
+                    }
+                }
+                res.map_err(|err| {
+                    error!(
+                        file_id = %self.file.id,
+                        file_name = %self.file.name,
+                        upload_url = %upload_url,
+                        size = self.upload_state.size,
+                        error = %err,
+                        "upload file chunk {} failed",
+                        current_chunk
+                    );
+                    FsError::GeneralFailure
+                })?;
+            }
+            self.upload_state.chunk += 1;
+        }
+        Ok(())
+    }
 
     async fn get_download_url(&self) -> Result<String, FsError> {
         self.fs.drive.get_download_url(&self.file.fid).await.map_err(|err| {
@@ -384,8 +708,19 @@ impl DavFile for QuarkDavFile {
     }
 
     fn write_buf(&mut self, buf: Box<dyn Buf + Send>) -> FsFuture<()> {
-        todo!()
+        debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: write_buf");
+        async move {
+            // uppre -> uphash -> upCommit -> upFinish
+            // TODO :
+            if self.prepare_for_upload().await? {
+                self.upload_state.buffer.put(buf);
+                self.maybe_upload_chunk(false).await?;
+            }
+            Ok(())
+        }
+            .boxed()
     }
+
 
     fn write_bytes(&mut self, buf: Bytes) -> FsFuture<()> {
         todo!()

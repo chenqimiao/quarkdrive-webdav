@@ -16,6 +16,7 @@ pub struct QuarkFile {
     pub dir: bool,
     pub file: bool,
     pub download_url:Option<String>,
+    pub content_hash: Option<String>,
 }
 
 
@@ -34,6 +35,7 @@ impl QuarkFile {
             file_name: "".to_string(),
             fid: "0".to_string(),
             download_url: None,
+            content_hash: None,
         }
     }
 }
@@ -63,9 +65,48 @@ pub struct GetFileItem {
 }
 
 
+#[derive(Debug, Serialize, Clone)]
+pub struct DeleteFilesRequest {
+    pub action_type: u8,
+    pub exclude_fids: Vec<String>,
+    pub filelist: Vec<String>,
+}
+
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CreateFolderRequest {
+    pub pdir_fid: String,
+    pub file_name: String,
+    pub dir_path: String,
+    pub dir_init_lock: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RenameFileRequest {
+    pub fid: String,
+    pub file_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MoveFileRequest {
+    pub filelist: Vec<String>,
+    pub to_pdir_fid: String,
+}
+
+
 pub type GetFilesResponse = Response<FilesData, FilesMetadata>;
 
 pub type GetFilesDownloadUrlsResponse = Response<Vec<FileDownloadUrlItem>, FileDownloadUrlMetadata>;
+
+pub type DeleteFilesResponse = Response<DeleteFilesData, DeleteFilesMetadata>;
+
+pub type CreateFolderResponse = Response<CreateFolderData, EmptyMetadata>;
+
+pub type RenameFileResponse = Response<EmptyData, EmptyMetadata>;
+
+pub type CommonResponse = Response<EmptyData, EmptyMetadata>;
+
+pub type GetSpaceInfoResponse = Response<GetSpaceInfoResponseData, EmptyMetadata>;
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -99,11 +140,42 @@ pub struct FilesMetadata {
     pub page: u32,
     
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteFilesData {
+    pub task_id: String,
+    pub finish: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteFilesMetadata {
+    pub tq_gap: u32,
+}
+
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateFolderData {
+    pub finish: bool,
+    pub f_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmptyMetadata {
+
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmptyData {
+
+}
+
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuarkFiles {
     pub list: Vec<QuarkFile>,
     pub total: u32,
 }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDownloadUrlItem {
     pub fid: String,
@@ -113,6 +185,16 @@ pub struct FileDownloadUrlItem {
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDownloadUrlMetadata {
     
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetSpaceInfoResponseData {
+    pub total_capacity: u64,
+    pub use_capacity: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetSpaceInfoResponseMetaData {
+
 }
 
 impl From<GetFilesResponse> for QuarkFiles {
