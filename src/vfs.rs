@@ -22,6 +22,16 @@ use crate::{
 };
 use bytes::BufMut;
 
+use md5::Context as Md5Context;
+use sha1::Sha1;
+use tokio::io::AsyncWriteExt;
+
+use sha1::Digest;
+use tokio::fs::File;
+
+use tokio::io::AsyncBufReadExt;
+use crate::drive::model::UpPartMethodRequest;
+
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
     drive: QuarkDrive,
@@ -461,22 +471,28 @@ impl DavFileSystem for QuarkDriveFileSystem {
 #[derive(Debug, Clone)]
 struct UploadState {
     size: u64,
-    buffer: BytesMut,
+    //buffer: BytesMut,
     chunk_count: u64,
     chunk_size: u64,
     chunk: u64,
     upload_id: String,
-    upload_urls: Vec<String>,
+    // upload_urls: Vec<String>,
     upload_url: String,
     sha1: Option<String>,
     task_id: String,
+    temp_file_path: String,
+    is_finished: bool,
+    bucket: String,
+    obj_key: String,
+    mime_type: String,
+    auth_info: String,
 }
 
 impl Default for UploadState {
     fn default() -> Self {
         Self {
             size: 0,
-            buffer: BytesMut::new(),
+           // buffer: BytesMut::new(),
             chunk_count: 0,
             chunk_size: 0,
             chunk: 1,
@@ -485,6 +501,12 @@ impl Default for UploadState {
             upload_url: "".to_string(),
             sha1: None,
             task_id: "".to_string(),
+            temp_file_path: "".to_string(),
+            is_finished: false,
+            bucket: "".to_string(),
+            obj_key: "".to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            auth_info: "".to_string(),
         }
     }
 }
@@ -497,7 +519,8 @@ struct QuarkDavFile {
     current_pos: u64,
     upload_state: UploadState,
     http_download: bool,
-    
+    md5_ctx: Md5Context,
+    sha1_ctx: Sha1,
 }
 
 impl Debug for QuarkDavFile {
@@ -533,9 +556,14 @@ impl QuarkDavFile {
                 ..Default::default()
             },
             http_download: false,
+            md5_ctx: Md5Context::new(),
+            sha1_ctx: Sha1::default(),
         }
     }
-    async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
+    async fn prepare_for_upload(&mut self, buf: Box<dyn Buf + Send>) -> Result<bool, FsError> {
+        if self.upload_state.is_finished  {
+            return Ok(false);
+        }
         if self.upload_state.chunk_count == 0 {
             let size = self.upload_state.size;
             debug!(file_name = %self.file.file_name, size = size, "prepare for upload");
@@ -550,6 +578,7 @@ impl QuarkDavFile {
                 }
                 if self.fs.skip_upload_same_size && self.file.size == size {
                     debug!(file_name = %self.file.file_name, size = size, "skip uploading same size file");
+                    self.upload_state.is_finished = true;
                     return Ok(false);
                 }
                 // existing file, delete before upload
@@ -580,10 +609,18 @@ impl QuarkDavFile {
                 })?;
             if res.data.finish {
                 // 秒传
+                self.upload_state.is_finished = true;
                 return Ok(false);
             }
+            self.upload_state.upload_url =
+                res.data.upload_url.strip_prefix("https://")
+                    .unwrap_or(&res.data.upload_url).to_string();
+            self.upload_state.bucket = res.data.bucket;
+            self.upload_state.obj_key = res.data.obj_key;
+            if (res.data.format_type != "") {
+                self.upload_state.mime_type = res.data.format_type;
+            }
 
-            self.fs.drive.up_hash()
             self.file.fid = res.data.fid.clone();
             self.upload_state.chunk_size = res.metadata.part_size;
             let chunk_count =
@@ -594,86 +631,135 @@ impl QuarkDavFile {
                 return Err(FsError::GeneralFailure);
             };
             self.upload_state.upload_id = upload_id;
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
 
-
-            // let upload_urls: Vec<_> = res
-            //     .part_info_list
-            //     .into_iter()
-            //     .map(|x| x.upload_url)
-            //     .collect();
-            // if upload_urls.is_empty() {
-            //     error!(file_id = %self.file.id, file_name = %self.file.name, "empty upload urls");
-            //     return Err(FsError::GeneralFailure);
-            // }
-            // self.upload_state.upload_urls = upload_urls;
         }
-        Ok(true)
+        let temp_path = self.upload_state.temp_file_path.clone();
+        let mut md5_ctx = self.md5_ctx.clone();
+        let mut sha1_ctx = self.sha1_ctx.clone();
+        let bytes = buf.chunk();
+        // 写入临时文件
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&temp_path)
+            .await
+            .map_err(|e| FsError::GeneralFailure)?;
+        file.write_all(bytes).await.map_err(|e| {;
+            error!(file_name = %self.file.file_name, error = %e, "write to temp file failed");
+            FsError::GeneralFailure
+        })?;
+        file.flush().await.map_err(|e| {});
+        // 更新哈希
+        md5_ctx.consume(bytes);
+        sha1_ctx.update(bytes);
+        // 保存回结构体
+        self.md5_ctx = md5_ctx;
+        self.sha1_ctx = sha1_ctx;
+
+        // self.upload_state.buffer.put(buf);
+
+        Ok(false)
+
     }
 
-    async fn maybe_upload_chunk(&mut self, remaining: bool) -> Result<(), FsError> {
-        let chunk_size = if remaining {
-            // last chunk size maybe less than upload_buffer_size
-            self.upload_state.buffer.remaining()
-        } else {
-            self.upload_state.chunk_size as usize
-        };
-        let current_chunk = self.upload_state.chunk;
-        if chunk_size > 0
-            && self.upload_state.buffer.remaining() >= chunk_size
-            && current_chunk <= self.upload_state.chunk_count
-        {
-            let chunk_data = self.upload_state.buffer.split_to(chunk_size);
-            debug!(
-                file_id = %self.file.fid,
-                file_name = %self.file.file_name,
-                size = self.upload_state.size,
-                "upload part {}/{}",
-                current_chunk,
-                self.upload_state.chunk_count
-            );
-            let mut upload_url = &self.upload_state.upload_urls[current_chunk as usize - 1];
-            let upload_data = chunk_data.freeze();
-            let mut res = self.fs.drive.upload(upload_url, upload_data.clone()).await;
-            if let Err(ref err) = res {
-                if err.to_string().contains("expired") {
-                    warn!(
-                        file_id = %self.file.id,
-                        file_name = %self.file.name,
-                        upload_url = %upload_url,
-                        "upload url expired"
-                    );
-                    if let Ok(part_info_list) = self
-                        .fs
-                        .drive
-                        .get_upload_url(
-                            &self.file.id,
-                            &self.upload_state.upload_id,
-                            self.upload_state.chunk_count,
-                        )
-                        .await
-                    {
-                        let upload_urls: Vec<_> =
-                            part_info_list.into_iter().map(|x| x.upload_url).collect();
-                        self.upload_state.upload_urls = upload_urls;
-                        upload_url = &self.upload_state.upload_urls[current_chunk as usize - 1];
-                        // retry upload
-                        res = self.fs.drive.upload(upload_url, upload_data).await;
-                    }
-                }
-                res.map_err(|err| {
-                    error!(
-                        file_id = %self.file.id,
-                        file_name = %self.file.name,
-                        upload_url = %upload_url,
-                        size = self.upload_state.size,
-                        error = %err,
-                        "upload file chunk {} failed",
-                        current_chunk
-                    );
-                    FsError::GeneralFailure
-                })?;
+    async fn upload_chunk(&mut self) -> Result<(), FsError> {
+
+        let chunk_size = self.upload_state.chunk_size as usize;
+
+        let temp_path = &self.upload_state.temp_file_path;
+        let file = File::open(temp_path).await.map_err(|err| {
+            error!(file_name = %self.file.file_name, error = %err, "open temp file failed");
+            FsError::GeneralFailure
+        })?;
+        let mut file = tokio::io::BufReader::new(file);
+        let mut buffer = BytesMut::with_capacity(chunk_size);
+        let mut chunk_count = self.upload_state.chunk_count;
+
+        // 分块上传文件,将temp_path目录所在文件,切成chunk_count块，每块大小 chunk_size，分块上传文件到夸克网盘
+        for chunk_idx in 1..= chunk_count {
+            buffer.clear();
+            let bytes_read = file.read_buf(&mut buffer).await.map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "read temp file failed");
+                FsError::GeneralFailure
+            })?;
+            if bytes_read == 0 {
+                break; // EOF
             }
+            if buffer.len() > chunk_size {
+                buffer.truncate(chunk_size);
+            }
+            // auth
+            let mime_type = &self.upload_state.mime_type;
+            let obj_key = &self.upload_state.obj_key;
+            let bucket = &self.upload_state.bucket;
+            let task_id = &self.upload_state.task_id;
+            let upload_id = &self.upload_state.upload_id;
+
+            let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+            // RFC1123 格式
+            let utc_time = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+            let auth_meta = self.fs.drive.up_part_auth_meta(mime_type, &utc_time, bucket, obj_key, chunk_idx as u32, upload_id).await.map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "get upload part auth meta failed");
+                FsError::GeneralFailure
+            })?;
+            let auth_info = &self.upload_state.auth_info;
+
+            let auth_res = self.fs.drive.auth(auth_info, &auth_meta, task_id).await.map_err(|err| {;
+                error!(file_name = %self.file.file_name, error = %err, "auth upload part failed");
+                FsError::GeneralFailure
+            })?;
+
+
+            let auth_key = auth_res.data.auth_key;
+
+            let upload_url = self.upload_state.upload_url.clone();
+            let up_req = UpPartMethodRequest {
+                 auth_key: auth_key.clone(),
+                 mime_type: self.upload_state.mime_type.clone(),
+                 utc_time: utc_time.clone(),
+                 bucket: bucket.clone(),
+                 upload_url: upload_url,
+                 obj_key: obj_key.clone(),
+                 part_number: chunk_idx as u32,
+                 upload_id: upload_id,
+                 part_bytes: buffer.to_vec(),
+            };
+
+            self.fs.drive.up_part(
+                &self.upload_state.upload_id,
+                &self.file.fid,
+                &buffer,
+                &upload_url,
+            ).await.map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "upload chunk failed");
+                FsError::GeneralFailure
+            })?;
             self.upload_state.chunk += 1;
+            chunk_idx = chunk_idx + 1;
+        }
+
+
+
+
+
+
+        self.upload_state.is_finished = true;
+        self.delete_temp_file().await;
+        return Ok(());
+        Ok(())
+    }
+
+    async fn delete_temp_file(&self) -> Result<(), FsError> {
+        let temp_path = &self.upload_state.temp_file_path;
+        if tokio::fs::metadata(temp_path).await.is_ok() {
+            if let Err(err) = tokio::fs::remove_file(temp_path).await {
+                error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "remove temp file failed");
+            }
         }
         Ok(())
     }
@@ -737,10 +823,8 @@ impl DavFile for QuarkDavFile {
         async move {
             // uppre -> uphash -> upCommit -> upFinish
             // TODO :
-            if self.prepare_for_upload().await? {
-                self.upload_state.buffer.put(buf);
-                self.maybe_upload_chunk(false).await?;
-            }
+
+            self.prepare_for_upload(buf).await?;
             Ok(())
         }
             .boxed()
@@ -798,7 +882,29 @@ impl DavFile for QuarkDavFile {
     }
 
     fn flush(&mut self) -> FsFuture<()> {
-        todo!()
+        async move {
+            if self.upload_state.is_finished {
+                debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
+                return Ok(());
+            }
+            // unHash
+            let md5 = self.md5_ctx.clone().compute();
+            let md5 = format!("{:x}", md5);
+            let sha1 = self.sha1_ctx.clone().finalize();
+            let sha1 = format!("{:x}", sha1);
+            let task_id = self.upload_state.task_id.clone();
+            let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {;
+                error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
+                FsError::GeneralFailure
+            })?;
+            if res.data.finish {
+                self.upload_state.is_finished = true;
+                self.delete_temp_file().await?;
+                return Ok(());
+            }
+            self.upload_chunk().await?;
+            Ok(())
+        }.boxed()
     }
 }
 

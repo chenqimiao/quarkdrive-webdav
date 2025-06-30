@@ -470,6 +470,114 @@ impl QuarkDrive {
         }
         Ok(res)
     }
+
+    pub async fn up_part_auth_meta(
+        &self,
+        mime_type: &str,
+        utc_time: &str,
+        bucket: &str,
+        obj_key: &str,
+        part_number: u32,
+        upload_id: &str,
+    ) -> Result<String> {
+        let r = format!(
+            "PUT\n\n{mime_type}\n{utc_time}\nx-oss-date:{utc_time}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{bucket}/{obj_key}?partNumber={part_number}&uploadId={upload_id}",
+            mime_type = mime_type,
+            utc_time = utc_time,
+            bucket = bucket,
+            obj_key = obj_key,
+            part_number = part_number,
+            upload_id = upload_id
+        );
+        Ok(r)
+    }
+    pub async fn auth(&self, auth_info: &str, auth_meta: &str, task_id: &str) -> Result<AuthResponse> {
+
+        let req = AuthRequest {
+            auth_info: auth_info.to_string(),
+            auth_meta: auth_meta.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: AuthResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/auth?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
+
+    pub async fn up_part(&self, req: UpPartMethodRequest) -> Result<Option<String>> {
+        let oss_url = format!(
+            "https://{}.{}//{}?partNumber={}&uploadId={}",
+            req.bucket,
+            req.upload_url, // 去掉 https://
+            req.obj_key,
+            req.part_number,
+            req.upload_id
+        );
+        let url = reqwest::Url::parse(&oss_url)?;
+        let res = self
+            .client
+            .put(url.clone())
+            .header("Authorization", req.auth_key.clone())
+            .header("Content-Type", req.mime_type.clone())
+            .header("x-oss-date", req.utc_time.clone())
+            .header("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+            .header("Referer", REFERER)
+            .body(req.part_bytes)
+            .send().await?;
+
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                if res.status() == StatusCode::NO_CONTENT {
+                    return Ok(None);
+                }
+                let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
+                return Ok(Some(etag.to_string()));
+            }
+            Err(err) => {
+                let err_msg = res.text().await?;
+                debug!(error = %err_msg, url = %url, "request failed");
+                match err.status() {
+                    Some(
+                        _status_code
+                        @
+                        (StatusCode::REQUEST_TIMEOUT
+                        | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::INTERNAL_SERVER_ERROR
+                        | StatusCode::BAD_GATEWAY
+                        | StatusCode::SERVICE_UNAVAILABLE
+                        | StatusCode::GATEWAY_TIMEOUT),
+                    ) => {
+                        time::sleep(Duration::from_secs(2)).await;
+                        let res = self
+                            .client
+                            .put(url)
+                            .send()
+                            .await?
+                            .error_for_status()?;
+                        if res.status() == StatusCode::NO_CONTENT {
+                            return Ok(None);
+                        }
+                        let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
+                          Ok(Some(etag.to_string()))
+                    }
+                    // unexpected error
+                    _ => {
+                        debug!(error = %err, "request failed");
+                        Err(err.into())
+                    }
+                }
+            }
+        }
+    }
 }
 
 

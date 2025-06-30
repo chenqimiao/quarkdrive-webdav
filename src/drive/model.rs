@@ -114,6 +114,26 @@ pub struct UpHashRequest {
 }
 
 
+#[derive(Debug, Serialize, Clone)]
+pub struct AuthRequest {
+    pub auth_info: String,
+    pub auth_meta: String,
+    pub task_id: String,
+}
+
+
+pub struct UpPartMethodRequest {
+    pub auth_key: String,
+    pub mime_type: String,
+    pub utc_time: String,
+    pub bucket: String,
+    pub upload_url: String,
+    pub obj_key: String,
+    pub part_number: u32,
+    pub upload_id: String,
+    pub part_bytes: Vec<u8>,
+}
+
 
 pub type GetFilesResponse = Response<FilesData, FilesMetadata>;
 
@@ -131,6 +151,8 @@ pub type GetSpaceInfoResponse = Response<GetSpaceInfoResponseData, EmptyMetadata
 pub type UpPreResponse = Response<UpPreResponseData, UpPreResponseMetaData>;
 
 pub type UpHashResponse = Response<UpHashResponseData, EmptyMetadata>;
+
+pub type AuthResponse = Response<AuthResponseData, EmptyMetadata>;
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -220,6 +242,12 @@ pub struct GetSpaceInfoResponseData {
 pub struct GetSpaceInfoResponseMetaData {
 
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthResponseData {
+    pub auth_key: String,
+}
+
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpPreResponseData {
