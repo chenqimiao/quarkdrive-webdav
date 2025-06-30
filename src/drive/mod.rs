@@ -445,6 +445,31 @@ impl QuarkDrive {
         }
         Ok(res)
     }
+
+
+    pub async fn up_hash(&self, md5: &str, sha1: &str, task_id: &str) -> Result<UpHashResponse> {
+
+        
+
+        let req = UpHashRequest {
+            md5: md5.to_string(),
+            sha1: sha1.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: UpHashResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/update/hash?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
 }
 
 

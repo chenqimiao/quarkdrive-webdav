@@ -106,6 +106,14 @@ pub struct UpPreRequest {
     pub dir_name: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct UpHashRequest {
+    pub md5: String,
+    pub sha1: String,
+    pub task_id: String,
+}
+
+
 
 pub type GetFilesResponse = Response<FilesData, FilesMetadata>;
 
@@ -121,6 +129,8 @@ pub type CommonResponse = Response<EmptyData, EmptyMetadata>;
 
 pub type GetSpaceInfoResponse = Response<GetSpaceInfoResponseData, EmptyMetadata>;
 pub type UpPreResponse = Response<UpPreResponseData, UpPreResponseMetaData>;
+
+pub type UpHashResponse = Response<UpHashResponseData, EmptyMetadata>;
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -230,6 +240,14 @@ pub struct UpPreResponseMetaData {
     pub part_size: u64,
     pub part_thread: u32
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpHashResponseData {
+    pub finish: bool,
+}
+
+
+
 
 impl From<GetFilesResponse> for QuarkFiles {
     fn from(response: GetFilesResponse) -> Self {

@@ -162,6 +162,13 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     None
                 }
             });
+
+            #[cfg(feature = "local_upload_hash")]
+            if options.write && path.is_file() && sha1.is_none() {
+                if let Ok((_, sha1_val)) = calc_md5_sha1(&path) {
+                    sha1 = Some(sha1_val);
+                }
+            }
             let mut dav_file = if let Some(file) = self.get_file(path.clone()).await? {
                 if options.write && options.create_new {
                     return Err(FsError::Exists);
@@ -456,10 +463,13 @@ struct UploadState {
     size: u64,
     buffer: BytesMut,
     chunk_count: u64,
+    chunk_size: u64,
     chunk: u64,
     upload_id: String,
     upload_urls: Vec<String>,
+    upload_url: String,
     sha1: Option<String>,
+    task_id: String,
 }
 
 impl Default for UploadState {
@@ -468,10 +478,13 @@ impl Default for UploadState {
             size: 0,
             buffer: BytesMut::new(),
             chunk_count: 0,
+            chunk_size: 0,
             chunk: 1,
             upload_id: String::new(),
             upload_urls: Vec::new(),
+            upload_url: "".to_string(),
             sha1: None,
+            task_id: "".to_string(),
         }
     }
 }
@@ -552,9 +565,9 @@ impl QuarkDavFile {
             // 由云端计算
             // 除了 size 和sha1 其余由云端获得
             // TODO ..
-           // let upload_buffer_size = self.fs.upload_buffer_size as u64;
+            // let upload_buffer_size = self.fs.upload_buffer_size as u64;
             // let chunk_count =
-             //   size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
+            //     size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
             // self.upload_state.chunk_count = chunk_count;
             let res = self
                 .fs
@@ -565,12 +578,24 @@ impl QuarkDavFile {
                     error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
                     FsError::GeneralFailure
                 })?;
+            if res.data.finish {
+                // 秒传
+                return Ok(false);
+            }
+
+            self.fs.drive.up_hash()
             self.file.fid = res.data.fid.clone();
+            self.upload_state.chunk_size = res.metadata.part_size;
+            let chunk_count =
+                size / res.metadata.part_size + if size % res.metadata.part_size != 0 { 1 } else { 0 };
+            self.upload_state.chunk_count = chunk_count;
             let Some(upload_id) = res.data.upload_id else {
                 error!("create file with proof failed: missing upload_id");
                 return Err(FsError::GeneralFailure);
             };
             self.upload_state.upload_id = upload_id;
+
+
             // let upload_urls: Vec<_> = res
             //     .part_info_list
             //     .into_iter()
@@ -581,11 +606,6 @@ impl QuarkDavFile {
             //     return Err(FsError::GeneralFailure);
             // }
             // self.upload_state.upload_urls = upload_urls;
-            
-            if res.data.finish {
-                // 秒传
-                return Ok(false);
-            }
         }
         Ok(true)
     }
@@ -595,7 +615,7 @@ impl QuarkDavFile {
             // last chunk size maybe less than upload_buffer_size
             self.upload_state.buffer.remaining()
         } else {
-            self.fs.upload_buffer_size
+            self.upload_state.chunk_size as usize
         };
         let current_chunk = self.upload_state.chunk;
         if chunk_size > 0

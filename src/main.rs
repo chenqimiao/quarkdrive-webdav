@@ -21,6 +21,7 @@ mod cache;
 mod drive;
 mod vfs;
 mod webdav;
+mod hash_calculator;
 
 use tokio::time::interval;
 
