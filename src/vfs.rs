@@ -849,7 +849,7 @@ impl DavFile for QuarkDavFile {
 
 
     fn write_bytes(&mut self, buf: Bytes) -> FsFuture<()> {
-        todo!()
+        self.write_bytes(buf);
     }
 
     fn read_bytes(&mut self, count: usize) -> FsFuture<Bytes> {
