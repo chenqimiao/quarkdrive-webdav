@@ -36,7 +36,7 @@ use tokio::io::AsyncReadExt;
 pub struct QuarkDriveFileSystem {
     drive: QuarkDrive,
     pub(crate) dir_cache: Cache,
-    uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
+    // uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
     root: PathBuf,
     no_trash: bool,
     read_only: bool,
@@ -58,7 +58,7 @@ impl QuarkDriveFileSystem {
         Ok(Self {
             drive,
             dir_cache,
-            uploading: Arc::new(DashMap::new()),
+            // uploading: Arc::new(DashMap::new()),
             root,
             no_trash: false,
             read_only: false,
@@ -194,6 +194,51 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     options.size.unwrap_or_default(),
                     sha1,
                 )
+            } else if options.write && (options.create || options.create_new) {
+                if self.read_only {
+                    return Err(FsError::Forbidden);
+                }
+
+                let size = options.size;
+                let name = dav_path
+                    .file_name()
+                    .ok_or(FsError::GeneralFailure)?
+                    .to_string();
+
+                // 忽略 macOS 上的一些特殊文件
+                if name == ".DS_Store" || name.starts_with("._") {
+                    return Err(FsError::NotFound);
+                }
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+
+                let file = QuarkFile {
+                    fid: "".to_string(),
+                    file_name: name,
+                    pdir_fid: parent_file.fid.clone(),
+                    size: size.unwrap_or(0),
+                    format_type: "application/octet-stream".to_string(),
+                    status: 1,
+                    dir: false,
+                    file: true,
+                    content_hash: sha1.clone(),
+                    created_at: now as u64,
+                    updated_at: now as u64,
+                    download_url: None,
+                };
+                // let mut uploading = self.uploading.entry(parent_file.fid.clone()).or_default();
+                // uploading.push(file.clone());
+                QuarkDavFile::new(
+                    self.clone(),
+                    file,
+                    parent_file.fid,
+                    parent_path.to_path_buf(),
+                    size.unwrap_or(0),
+                    sha1,
+                )
             } else {
                 return Err(FsError::NotFound);
             };
@@ -298,6 +343,11 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 return Err(FsError::Forbidden);
             }
 
+            let files = self.dir_cache.get_or_insert(&path.to_string_lossy())
+                .await;
+            if files.is_some() {
+                return Ok(());
+            }
             let parent_path = path.parent().ok_or(FsError::NotFound)?;
             let parent_file = self
                 .get_file(parent_path.to_path_buf())
@@ -614,6 +664,7 @@ impl QuarkDavFile {
                 return Ok(false);
             }
             self.upload_state.callback = Some(res.data.callback.clone());
+            self.upload_state.task_id = res.data.task_id.clone();
             self.upload_state.upload_url =
                 res.data.upload_url.strip_prefix("https://")
                     .unwrap_or(&res.data.upload_url).to_string();
@@ -835,7 +886,7 @@ impl DavFile for QuarkDavFile {
             .boxed()
     }
 
-    fn write_buf(&mut self, buf: Box<dyn Buf + Send>) -> FsFuture<()> {
+    fn write_buf(&mut self, buf: Box<dyn bytes::Buf + Send>) -> FsFuture<()>{
         debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: write_buf");
         async move {
             // uppre -> uphash -> upCommit -> upFinish
@@ -848,7 +899,7 @@ impl DavFile for QuarkDavFile {
     }
 
 
-    fn write_bytes(&mut self, buf: Bytes) -> FsFuture<()> {
+    fn write_bytes(&mut self, buf: bytes::Bytes) -> FsFuture<()> {
         let buf: Box<dyn Buf + Send> = Box::new(buf);
         self.write_buf(buf)
     }
@@ -900,30 +951,38 @@ impl DavFile for QuarkDavFile {
     }
 
     fn flush(&mut self) -> FsFuture<()> {
+
+        // async move {
+        //     if self.upload_state.is_finished {
+        //         debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
+        //         return Ok(());
+        //     }
+        //     // unHash
+        //     let md5 = self.md5_ctx.clone().compute();
+        //     let md5 = format!("{:x}", md5);
+        //     let sha1 = self.sha1_ctx.clone().finalize();
+        //     let sha1 = format!("{:x}", sha1);
+        //     let task_id = self.upload_state.task_id.clone();
+        //     let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {;
+        //         error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
+        //         FsError::GeneralFailure
+        //     })?;
+        //     if res.data.finish {
+        //         self.upload_state.is_finished = true;
+        //         self.delete_temp_file().await?;
+        //         return Ok(());
+        //     }
+        //     self.upload_chunk().await?;
+        //     self.fs.dir_cache.invalidate(&self.parent_dir.as_path()).await;
+        //     self.upload_state.is_finished = true;
+        //     self.delete_temp_file().await?;
+        //     Ok(())
+        // }.boxed()
+
+        debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush");
+        // return empty future
         async move {
-            if self.upload_state.is_finished {
-                debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
-                return Ok(());
-            }
-            // unHash
-            let md5 = self.md5_ctx.clone().compute();
-            let md5 = format!("{:x}", md5);
-            let sha1 = self.sha1_ctx.clone().finalize();
-            let sha1 = format!("{:x}", sha1);
-            let task_id = self.upload_state.task_id.clone();
-            let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {;
-                error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
-                FsError::GeneralFailure
-            })?;
-            if res.data.finish {
-                self.upload_state.is_finished = true;
-                self.delete_temp_file().await?;
-                return Ok(());
-            }
-            self.upload_chunk().await?;
-            self.fs.dir_cache.invalidate(&self.parent_dir.as_path()).await;
-            self.upload_state.is_finished = true;
-            self.delete_temp_file().await?;
+
             Ok(())
         }.boxed()
     }
