@@ -121,6 +121,12 @@ pub struct AuthRequest {
     pub task_id: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct FinishRequest {
+    pub obj_key: String,
+    pub task_id: String,
+}
+
 
 pub struct UpPartMethodRequest {
     pub auth_key: String,
@@ -153,6 +159,9 @@ pub type UpPreResponse = Response<UpPreResponseData, UpPreResponseMetaData>;
 pub type UpHashResponse = Response<UpHashResponseData, EmptyMetadata>;
 
 pub type AuthResponse = Response<AuthResponseData, EmptyMetadata>;
+
+pub type FinishResponse = Response<EmptyData, EmptyMetadata>;
+
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -261,8 +270,29 @@ pub struct UpPreResponseData {
     pub bucket: String,
     pub format_type: String,
     pub auth_info_expried: u64,
+    pub callback: Callback,
 
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpAuthAndCommitRequest {
+    pub md5s: Vec<String>,
+    pub callback: Callback,
+    pub bucket: String,
+    pub obj_key: String,
+    pub upload_id: String,
+    pub auth_info: String,
+    pub task_id: String,
+    pub upload_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Callback {
+    #[serde(rename = "callbackUrl")]
+    pub callback_url: String,
+    #[serde(rename = "callbackBody")]
+    pub callback_body: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpPreResponseMetaData {
     pub part_size: u64,

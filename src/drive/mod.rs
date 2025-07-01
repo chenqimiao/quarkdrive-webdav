@@ -9,14 +9,14 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::time;
-use tracing::{debug};
+use tracing::{debug, error};
 
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     IntoUrl, StatusCode,
 };
 
-use dav_server::fs::{DavDirEntry, DavMetaData, FsFuture, FsResult};
+use dav_server::fs::{DavDirEntry, DavMetaData, FsError, FsFuture, FsResult};
 
 
 use bytes::Bytes;
@@ -164,19 +164,46 @@ impl QuarkDrive {
     }
 
 
-    async fn post_request<T, U>(&self, url: String, r: &T) -> Result<Option<U>>
+    async fn post_request<T, U>(&self, url: String, r: &T, headers: Option<HeaderMap> ) -> Result<Option<U>>
     where
         T: Serialize + ?Sized,
         U: DeserializeOwned,
     {
         let url = reqwest::Url::parse(&url)?;
-        let res= self
-            .client
-            .post(url.clone())
-            .json(&r)
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+        let res = if let Some(headers) = headers {
+            let is_xml = headers
+                .get("Content-Type")
+                .map(|v| v == "application/xml")
+                .unwrap_or(false);
+            if is_xml {
+                let body = serde_json::to_value(r)?
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| serde_json::to_string(r).unwrap());
+                self.client
+                    .post(url.clone())
+                    .body(body)
+                    .headers(headers)
+                    .send()
+                    .await?
+            }else {
+                self.client
+                    .post(url.clone())
+                    .json(r)
+                    .headers(headers)
+                    .send()
+                    .await?
+            }
+
+        } else {
+            self.client
+                .post(url.clone())
+                .json(r)
+                .header("Content-Type", "application/json")
+                .send()
+                .await?
+        };
+
 
         match res.error_for_status_ref() {
             Ok(_) => {
@@ -267,6 +294,7 @@ impl QuarkDrive {
                     self.config.api_base_url
                 ),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -317,6 +345,7 @@ impl QuarkDrive {
             .post_request(
                 format!("{}/1/clouddrive/file/rename?pr=ucpro&fr=pc", self.config.api_base_url),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -341,6 +370,7 @@ impl QuarkDrive {
             .post_request(
                 format!("{}/1/clouddrive/file/move?pr=ucpro&fr=pc", self.config.api_base_url),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -364,6 +394,7 @@ impl QuarkDrive {
                     self.config.api_base_url
                 ),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -388,6 +419,7 @@ impl QuarkDrive {
             .post_request(
                 format!("{}/1/clouddrive/file?pr=ucpro&fr=pc", self.config.api_base_url),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -435,7 +467,8 @@ impl QuarkDrive {
         let res: UpPreResponse = self
             .post_request(
                 format!("{}/1/clouddrive/file/upload/pre?pr=ucpro&fr=pc", self.config.api_base_url),
-                &req
+                &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -460,7 +493,8 @@ impl QuarkDrive {
         let res: UpHashResponse = self
             .post_request(
                 format!("{}/1/clouddrive/file/update/hash?pr=ucpro&fr=pc", self.config.api_base_url),
-                &req
+                &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -491,6 +525,49 @@ impl QuarkDrive {
         );
         Ok(r)
     }
+
+    pub fn up_commit_auth_meta(
+        &self,
+        md5s: Vec<String>,
+        callback: &Callback,
+        bucket: &str,
+        obj_key: &str,
+        time_str: &str,
+        upload_id: &str,
+    ) -> Result<String> {
+        // 构建XML内容
+        let mut xml_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n");
+
+        for (i, md5) in md5s.iter().enumerate() {
+            xml_body.push_str(&format!(
+                "<Part>\n<PartNumber>{}</PartNumber>\n<ETag>{}</ETag>\n</Part>\n",
+                i + 1,
+                md5
+            ));
+        }
+        xml_body.push_str("</CompleteMultipartUpload>");
+
+        // 计算XML内容的MD5
+        let digest = md5::compute(xml_body.as_bytes());
+        let content_md5 = base64::encode(&digest.0);
+
+        // 序列化callback并Base64编码
+        let callback_bytes = serde_json::to_vec(callback)?;
+        let callback_base64 = base64::encode(&callback_bytes);
+
+        // 构建auth_meta字符串
+        let auth_meta = format!(
+            "POST\n{}\napplication/xml\n{}\nx-oss-callback:{}\nx-oss-date:{}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{}/{}?uploadId={}",
+            content_md5,
+            time_str,
+            callback_base64,
+            time_str,
+            bucket,
+            obj_key,
+            upload_id
+        );
+        Ok(auth_meta)
+    }
     pub async fn auth(&self, auth_info: &str, auth_meta: &str, task_id: &str) -> Result<AuthResponse> {
 
         let req = AuthRequest {
@@ -502,7 +579,8 @@ impl QuarkDrive {
         let res: AuthResponse = self
             .post_request(
                 format!("{}/1/clouddrive/file/upload/auth?pr=ucpro&fr=pc", self.config.api_base_url),
-                &req
+                &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -510,6 +588,95 @@ impl QuarkDrive {
         if res.status != 200 {
             return Err(anyhow::anyhow!("delete file failed: {}", res.message));
         }
+        Ok(res)
+    }
+
+    pub async fn up_auth_and_commit(&self,
+                                    req: UpAuthAndCommitRequest
+                                    ) -> Result<()> {
+        // 构建XML内容
+        let mut xml_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n");
+
+        for (i, md5) in req.md5s.iter().enumerate() {
+            xml_body.push_str(&format!(
+                "<Part>\n<PartNumber>{}</PartNumber>\n<ETag>{}</ETag>\n</Part>\n",
+                i + 1,
+                md5
+            ));
+        }
+        xml_body.push_str("</CompleteMultipartUpload>");
+
+        // 计算XML内容的MD5
+        let digest = md5::compute(xml_body.as_bytes());
+        let content_md5 = base64::encode(&digest.0);
+
+        // 序列化callback并Base64编码
+        let callback_bytes = serde_json::to_vec(&req.callback)?;
+        let callback_base64 = base64::encode(&callback_bytes);
+        let now = chrono::Utc::now();
+        let time_str = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        let timestamp = now.timestamp_millis();
+
+        // 构建auth_meta字符串
+        let auth_meta = format!(
+            "POST\n{}\napplication/xml\n{}\nx-oss-callback:{}\nx-oss-date:{}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{}/{}?uploadId={}",
+            content_md5,
+            &time_str,
+            callback_base64,
+            &time_str,
+            req.bucket,
+            req.obj_key,
+            req.upload_id
+        );
+        let auth_key = self.auth(&req.auth_info, &auth_meta, &req.task_id).await
+            .map_err(|e| {
+                error!(error = %e, "Failed to authenticate and commit upload");
+                e
+            }).unwrap().data.auth_key;
+
+        let commit_url = format!(
+            "https://{}.{}/{}?uploadId={}",
+            req.bucket,
+            req.upload_url, // 去掉 https://
+            req.obj_key,
+            req.upload_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", HeaderValue::from_str(&auth_key)?);
+        headers.insert("Content-MD5", HeaderValue::from_str(&content_md5)?);
+        headers.insert("Content-Type", HeaderValue::from_str("application/xml")?);
+        headers.insert("x-oss-callback", HeaderValue::from_str(&callback_base64)?);
+        headers.insert("x-oss-date", HeaderValue::from_str(&time_str)?);
+        headers.insert("x-oss-user-agent", HeaderValue::from_str("aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")?);
+
+        let _res: Option<()> = self.post_request(commit_url, &xml_body, Some(headers)).await?;
+        Ok(())
+
+
+
+    }
+    pub async fn finish(&self, obj_key: &str, task_id: &str) -> Result<FinishResponse> {
+
+        let req = FinishRequest {
+            obj_key: obj_key.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: FinishResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/finish?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        // sleep 1 sec for quark drive to process the finish request
+        time::sleep(Duration::from_secs(1)).await;
         Ok(res)
     }
 

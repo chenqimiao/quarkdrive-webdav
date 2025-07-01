@@ -29,8 +29,8 @@ use tokio::io::AsyncWriteExt;
 use sha1::Digest;
 use tokio::fs::File;
 
-use tokio::io::AsyncBufReadExt;
-use crate::drive::model::UpPartMethodRequest;
+use crate::drive::model::{Callback, UpAuthAndCommitRequest, UpPartMethodRequest};
+use tokio::io::AsyncReadExt;
 
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
@@ -486,6 +486,7 @@ struct UploadState {
     obj_key: String,
     mime_type: String,
     auth_info: String,
+    callback: Option<Callback>
 }
 
 impl Default for UploadState {
@@ -497,7 +498,6 @@ impl Default for UploadState {
             chunk_size: 0,
             chunk: 1,
             upload_id: String::new(),
-            upload_urls: Vec::new(),
             upload_url: "".to_string(),
             sha1: None,
             task_id: "".to_string(),
@@ -507,6 +507,7 @@ impl Default for UploadState {
             obj_key: "".to_string(),
             mime_type: "application/octet-stream".to_string(),
             auth_info: "".to_string(),
+            callback: None,
         }
     }
 }
@@ -612,6 +613,7 @@ impl QuarkDavFile {
                 self.upload_state.is_finished = true;
                 return Ok(false);
             }
+            self.upload_state.callback = Some(res.data.callback.clone());
             self.upload_state.upload_url =
                 res.data.upload_url.strip_prefix("https://")
                     .unwrap_or(&res.data.upload_url).to_string();
@@ -668,9 +670,7 @@ impl QuarkDavFile {
     }
 
     async fn upload_chunk(&mut self) -> Result<(), FsError> {
-
         let chunk_size = self.upload_state.chunk_size as usize;
-
         let temp_path = &self.upload_state.temp_file_path;
         let file = File::open(temp_path).await.map_err(|err| {
             error!(file_name = %self.file.file_name, error = %err, "open temp file failed");
@@ -678,9 +678,18 @@ impl QuarkDavFile {
         })?;
         let mut file = tokio::io::BufReader::new(file);
         let mut buffer = BytesMut::with_capacity(chunk_size);
-        let mut chunk_count = self.upload_state.chunk_count;
-
+        let chunk_count = self.upload_state.chunk_count;
+        // 定义一个字符串数组，size = chunk_count
+        let mut etags = vec![String::new(); chunk_count as usize];
         // 分块上传文件,将temp_path目录所在文件,切成chunk_count块，每块大小 chunk_size，分块上传文件到夸克网盘
+        // auth
+        let mime_type = &self.upload_state.mime_type;
+        let obj_key = &self.upload_state.obj_key;
+        let bucket = &self.upload_state.bucket;
+        let task_id = &self.upload_state.task_id;
+        let upload_id = &self.upload_state.upload_id;
+        let upload_url = &self.upload_state.upload_url;
+
         for chunk_idx in 1..= chunk_count {
             buffer.clear();
             let bytes_read = file.read_buf(&mut buffer).await.map_err(|err| {
@@ -693,12 +702,6 @@ impl QuarkDavFile {
             if buffer.len() > chunk_size {
                 buffer.truncate(chunk_size);
             }
-            // auth
-            let mime_type = &self.upload_state.mime_type;
-            let obj_key = &self.upload_state.obj_key;
-            let bucket = &self.upload_state.bucket;
-            let task_id = &self.upload_state.task_id;
-            let upload_id = &self.upload_state.upload_id;
 
             let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
             // RFC1123 格式
@@ -717,40 +720,54 @@ impl QuarkDavFile {
 
             let auth_key = auth_res.data.auth_key;
 
-            let upload_url = self.upload_state.upload_url.clone();
             let up_req = UpPartMethodRequest {
                  auth_key: auth_key.clone(),
                  mime_type: self.upload_state.mime_type.clone(),
                  utc_time: utc_time.clone(),
                  bucket: bucket.clone(),
-                 upload_url: upload_url,
+                 upload_url: upload_url.clone(),
                  obj_key: obj_key.clone(),
                  part_number: chunk_idx as u32,
-                 upload_id: upload_id,
+                 upload_id: upload_id.to_string(),
                  part_bytes: buffer.to_vec(),
             };
 
-            self.fs.drive.up_part(
-                &self.upload_state.upload_id,
-                &self.file.fid,
-                &buffer,
-                &upload_url,
-            ).await.map_err(|err| {
+            let res = self.fs.drive.up_part(up_req).await.map_err(|err| {
                 error!(file_name = %self.file.file_name, error = %err, "upload chunk failed");
                 FsError::GeneralFailure
             })?;
-            self.upload_state.chunk += 1;
-            chunk_idx = chunk_idx + 1;
+            let etag_from_up_part = res.unwrap();
+            // 检查是否提前完成
+            if etag_from_up_part == "finish" {
+
+            }
+            etags.push(etag_from_up_part);
+           // self.upload_state.chunk += 1;
         }
+        let callback = self.upload_state.callback.clone().unwrap();
 
+        let auth_info = &self.upload_state.auth_info;
+        let commit_req = UpAuthAndCommitRequest{
+            md5s: etags.clone(),
+            callback: callback,
+            bucket: bucket.clone(),
+            obj_key: obj_key.clone(),
+            upload_id: upload_id.clone(),
+            auth_info: auth_info.clone(),
+            task_id: task_id.clone(),
+            upload_url: upload_url.clone(),
+        };
+        // commit
+        self.fs.drive.up_auth_and_commit(commit_req).await.map_err(|err| {;
+            error!(file_name = %self.file.file_name, error = %err, "commit upload failed");
+            FsError::GeneralFailure
+        })?;
+        // finish upload
+        self.fs.drive.finish(&obj_key, &task_id).await.map_err(|err| {
+            error!(file_name = %self.file.file_name, error = %err, "finish upload failed");
+            FsError::GeneralFailure
+        })?;
 
-
-
-
-
-        self.upload_state.is_finished = true;
-        self.delete_temp_file().await;
-        return Ok(());
         Ok(())
     }
 
@@ -903,6 +920,8 @@ impl DavFile for QuarkDavFile {
                 return Ok(());
             }
             self.upload_chunk().await?;
+            self.upload_state.is_finished = true;
+            self.delete_temp_file().await?;
             Ok(())
         }.boxed()
     }
