@@ -849,7 +849,8 @@ impl DavFile for QuarkDavFile {
 
 
     fn write_bytes(&mut self, buf: Bytes) -> FsFuture<()> {
-        self.write_bytes(buf);
+        let buf: Box<dyn Buf + Send> = Box::new(bytes);
+        self.write_buf(buf);
     }
 
     fn read_bytes(&mut self, count: usize) -> FsFuture<Bytes> {
@@ -920,6 +921,7 @@ impl DavFile for QuarkDavFile {
                 return Ok(());
             }
             self.upload_chunk().await?;
+            self.fs.dir_cache.invalidate(&self.parent_dir.as_path()).await;
             self.upload_state.is_finished = true;
             self.delete_temp_file().await?;
             Ok(())
