@@ -211,7 +211,7 @@ pub struct DeleteFilesMetadata {
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateFolderData {
     pub finish: bool,
-    pub f_id: String,
+    pub fid: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

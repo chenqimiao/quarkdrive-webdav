@@ -215,11 +215,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 .await
                 .ok_or(FsError::NotFound)
                 .and_then(|files| {
-                    if files.is_empty() {
-                        Err(FsError::NotFound)
-                    } else {
-                        Ok(files)
-                    }
+                    Ok(files)
                 })?;
 
             // 创建包含结果的向量
@@ -307,7 +303,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 .get_file(parent_path.to_path_buf())
                 .await?
                 .ok_or(FsError::NotFound)?;
-            if parent_file.dir {
+            if !parent_file.dir {
                 return Err(FsError::Forbidden);
             }
             if let Some(name) = path.file_name() {
@@ -319,6 +315,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                         error!(path = %path.display(), error = %err, "create folder failed");
                         FsError::GeneralFailure
                     })?;
+                // sleep 1s for quark server to update cache
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 self.dir_cache.invalidate(parent_path).await;
                 Ok(())
             } else {
@@ -341,7 +339,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 .get_file(path.clone())
                 .await?
                 .ok_or(FsError::NotFound)?;
-            if file.dir {
+            if !file.dir {
                 return Err(FsError::Forbidden);
             }
             self.drive
@@ -380,6 +378,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     error!(path = %path.display(), error = %err, "remove file failed");
                     FsError::GeneralFailure
                 })?;
+            // sleep 500ms for quark server to update cache
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             self.dir_cache.invalidate_parent(&path).await;
             Ok(())
         }
