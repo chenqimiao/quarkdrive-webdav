@@ -849,8 +849,8 @@ impl DavFile for QuarkDavFile {
 
 
     fn write_bytes(&mut self, buf: Bytes) -> FsFuture<()> {
-        let buf: Box<dyn Buf + Send> = Box::new(bytes);
-        self.write_buf(buf);
+        let buf: Box<dyn Buf + Send> = Box::new(buf);
+        self.write_buf(buf)
     }
 
     fn read_bytes(&mut self, count: usize) -> FsFuture<Bytes> {
