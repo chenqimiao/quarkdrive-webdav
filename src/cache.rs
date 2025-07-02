@@ -64,8 +64,21 @@ impl Cache {
         if file.dir {
             let mut current_files = Vec::<QuarkFile>::new();
             for page_no in 1..=20 {
-                let (files, total) = self.drive.get_files_by_pdir_fid(&file.fid, page_no, ONE_PAGE).await.unwrap();
-                let files = files.unwrap();
+                let (files, total) =
+                    match self.drive.get_files_by_pdir_fid(&file.fid, page_no, ONE_PAGE).await{
+                    Ok((k, v)) => (k, v),
+                    Err(e) => {
+                        debug!(error = %e, file_id = &file.fid, file_name = &file.file_name,
+                                page_no = page_no,
+                            "Failed to get files from drive");
+                        return;
+                    }
+                };
+                let mut files = files.unwrap();
+                // add dfs_path to each file
+                for f in files.list.iter_mut() {
+                    f.parent_path = Some(dfs_path.to_string());
+                }
                 let size = files.list.len();
                 current_files.extend(files.list);
                 // guess: es limit is 10000

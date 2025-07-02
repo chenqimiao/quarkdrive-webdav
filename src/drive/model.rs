@@ -17,6 +17,7 @@ pub struct QuarkFile {
     pub file: bool,
     pub download_url:Option<String>,
     pub content_hash: Option<String>,
+    pub parent_path: Option<String>,
 }
 
 
@@ -27,6 +28,7 @@ impl QuarkFile {
             pdir_fid: "".to_string(),
             size: 0u64,
             format_type: "".to_string(),
+            parent_path: None,
             status: 1u8,
             created_at: now,
             updated_at: now,
