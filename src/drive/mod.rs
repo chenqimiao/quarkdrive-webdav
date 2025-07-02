@@ -11,6 +11,8 @@ use serde::Serialize;
 use tokio::time;
 use tracing::{debug, error};
 
+use quick_xml::de::from_str;
+
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     IntoUrl, StatusCode,
@@ -57,7 +59,7 @@ impl DavMetaData for QuarkFile {
     }
 
     fn created(&self) -> FsResult<SystemTime> {
-       Ok(SystemTime::UNIX_EPOCH + Duration::from_millis(self.created_at))
+        Ok(SystemTime::UNIX_EPOCH + Duration::from_millis(self.created_at))
     }
 }
 
@@ -85,7 +87,7 @@ impl QuarkDrive {
             .jitter(Jitter::Bounded)
             .base(2)
             .build_with_max_retries(3);
-            
+
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers)
@@ -99,6 +101,7 @@ impl QuarkDrive {
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
+
         let drive = Self {
             config,
             client,
@@ -170,8 +173,9 @@ impl QuarkDrive {
         U: DeserializeOwned,
     {
         let url = reqwest::Url::parse(&url)?;
+        let mut is_xml = false;
         let res = if let Some(headers) = headers {
-            let is_xml = headers
+            is_xml = headers
                 .get("Content-Type")
                 .map(|v| v == "application/xml")
                 .unwrap_or(false);
@@ -210,10 +214,16 @@ impl QuarkDrive {
                 if res.status() == StatusCode::NO_CONTENT {
                     return Ok(None);
                 }
-                // let res = res.text().await?;
-                // println!("{}: {}", url, res);
+
+
+                let text = res.text().await?;
+                println!("{}: {}", url, text);
                 // let res = serde_json::from_str(&res)?;
-                let res = res.json::<U>().await?;
+                let res = serde_json::from_str::<U>(&text)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
+
+                // let res = ;
+                // let res = res.json::<U>().await?;
                 Ok(Some(res))
             }
             Err(err) => {
@@ -306,7 +316,7 @@ impl QuarkDrive {
         self.get_download_urls(vec![fid.to_string()]).await?.iter().next()
             .map(|(_, url)| url.clone())
             .ok_or_else(|| anyhow::anyhow!("No download URL found for fid: {}", fid))
-        
+
     }
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
@@ -482,7 +492,7 @@ impl QuarkDrive {
 
     pub async fn up_hash(&self, md5: &str, sha1: &str, task_id: &str) -> Result<UpHashResponse> {
 
-        
+
 
         let req = UpHashRequest {
             md5: md5.to_string(),
@@ -593,7 +603,7 @@ impl QuarkDrive {
 
     pub async fn up_auth_and_commit(&self,
                                     req: UpAuthAndCommitRequest
-                                    ) -> Result<()> {
+    ) -> Result<()> {
         // 构建XML内容
         let mut xml_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n");
 
@@ -606,16 +616,20 @@ impl QuarkDrive {
         }
         xml_body.push_str("</CompleteMultipartUpload>");
 
+        println!("Xml Body: {}", xml_body);
+
         // 计算XML内容的MD5
         let digest = md5::compute(xml_body.as_bytes());
+
         let content_md5 = base64::encode(&digest.0);
+        println!("MD5: {}", content_md5);
 
         // 序列化callback并Base64编码
         let callback_bytes = serde_json::to_vec(&req.callback)?;
         let callback_base64 = base64::encode(&callback_bytes);
         let now = chrono::Utc::now();
         let time_str = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
-        let timestamp = now.timestamp_millis();
+        //let timestamp = now.timestamp_millis();
 
         // 构建auth_meta字符串
         let auth_meta = format!(
@@ -649,8 +663,11 @@ impl QuarkDrive {
         headers.insert("x-oss-callback", HeaderValue::from_str(&callback_base64)?);
         headers.insert("x-oss-date", HeaderValue::from_str(&time_str)?);
         headers.insert("x-oss-user-agent", HeaderValue::from_str("aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")?);
+        headers.insert("Referer", HeaderValue::from_str(REFERER)?);
 
-        let _res: Option<()> = self.post_request(commit_url, &xml_body, Some(headers)).await?;
+        println!("{:#?}", headers);
+        let _res: EmptyResponse = self.post_request(commit_url, &xml_body, Some(headers)) .await?.context("expect response")?;
+
         Ok(())
 
 
@@ -734,7 +751,7 @@ impl QuarkDrive {
                             return Ok(None);
                         }
                         let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
-                          Ok(Some(etag.to_string()))
+                        Ok(Some(etag.to_string()))
                     }
                     // unexpected error
                     _ => {

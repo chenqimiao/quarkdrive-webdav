@@ -104,7 +104,7 @@ pub struct UpPreRequest {
     pub ccp_hash_update: bool,
     pub l_created_at: u64,
     pub l_updated_at: u64,
-    pub parallel_upload: bool, 
+    pub parallel_upload: bool,
     pub dir_name: String,
 }
 
@@ -182,6 +182,13 @@ pub struct Response<T, U> {
 
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct EmptyResponse {
+
+}
+
+
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct FilesData {
     pub list: Vec<QuarkFile>,
 
@@ -195,7 +202,7 @@ pub struct FilesMetadata {
     pub count: u32,
     #[serde(rename = "_page")]
     pub page: u32,
-    
+
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -241,7 +248,7 @@ pub struct FileDownloadUrlItem {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDownloadUrlMetadata {
-    
+
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetSpaceInfoResponseData {

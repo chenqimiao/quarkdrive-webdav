@@ -314,7 +314,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
             if file.is_none() {
                 let parent_path = path.parent().ok_or(FsError::NotFound)?;
                 file = self.list_uploading_files(parent_path.to_str().unwrap())
-                        .first().cloned();
+                    .first().cloned();
 
             };
 
@@ -623,7 +623,7 @@ impl Debug for QuarkDavFile {
 }
 
 impl QuarkDavFile {
-    
+
     fn new(
         fs: QuarkDriveFileSystem,
         file: QuarkFile,
@@ -686,92 +686,54 @@ impl QuarkDavFile {
             // let chunk_count =
             //     size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
             // self.upload_state.chunk_count = chunk_count;
-            let res = self
-                .fs
-                .drive
-                .up_pre(&self.file.file_name, size, &self.parent_file_id)
-                .await
-                .map_err(|err| {
-                    error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
-                    FsError::GeneralFailure
-                })?;
-
-            // sleep 500ms
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-            self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
-
-            if res.data.finish {
-                // 秒传
-                self.upload_state.is_finished = true;
-                return Ok(false);
-            }
-            self.upload_state.callback = Some(res.data.callback.clone());
-            self.upload_state.task_id = res.data.task_id.clone();
-            self.upload_state.upload_url =
-                res.data.upload_url.strip_prefix("https://")
-                    .unwrap_or(&res.data.upload_url).to_string();
-            self.upload_state.bucket = res.data.bucket;
-            self.upload_state.obj_key = res.data.obj_key;
-            if (res.data.format_type != "") {
-                self.upload_state.mime_type = res.data.format_type;
-            }
-
-            self.file.fid = res.data.fid.clone();
-            //let file = self.file.clone();
-            //let parent_path = file.parent_path.as_ref().unwrap().clone();
-            // let mut uploading = self.fs.uploading.entry(parent_path).or_default();
-            // uploading.push(file.clone());
-
-            self.upload_state.chunk_size = res.metadata.part_size;
-            let chunk_count =
-                size / res.metadata.part_size + if size % res.metadata.part_size != 0 { 1 } else { 0 };
-            self.upload_state.chunk_count = chunk_count;
-            let Some(upload_id) = res.data.upload_id else {
-                error!("create file with proof failed: missing upload_id");
-                return Err(FsError::GeneralFailure);
-            };
-            self.upload_state.upload_id = upload_id;
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-            self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
-
         }
-        // if self.upload_state.buffer.is_empty() {
-        //    return Ok(true);
-        // }
+        Ok(true)
+
+    }
+    async fn consume_buf(&mut self) -> Result<(), FsError> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
         let temp_path = self.upload_state.temp_file_path.clone();
         let mut md5_ctx = self.md5_ctx.clone();
         let mut sha1_ctx = self.sha1_ctx.clone();
         let bytes = self.upload_state.buffer.split().freeze().to_vec();
         // 写入临时文件
+        self.upload_state.size = self.upload_state.size + bytes.len() as u64;
+        if let Some(parent) = std::path::Path::new(&temp_path).parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            .write(true)
             .append(true)
             .open(&temp_path)
             .await
-            .map_err(|e| FsError::GeneralFailure)?;
+            .map_err(|e| {
+                error!("failed to open file: {}, {}", temp_path, e);
+                FsError::GeneralFailure
+            })?;
         file.write_all(&bytes).await.map_err(|e| {;
             error!(file_name = %self.file.file_name, error = %e, "write to temp file failed");
             FsError::GeneralFailure
         })?;
-        file.flush().await.map_err(|e| {});
+        file.flush().await.map_err(|e| {
+            error!(file_name = %self.file.file_name, error = %e, "flush temp file failed");
+            FsError::GeneralFailure
+        })?;
         // 更新哈希
         md5_ctx.consume(&bytes);
         sha1_ctx.update(&bytes);
         // 保存回结构体
         self.md5_ctx = md5_ctx;
         self.sha1_ctx = sha1_ctx;
-
-
-
-        Ok(false)
-
+        Ok(())
     }
 
     async fn upload_chunk(&mut self) -> Result<(), FsError> {
+
         let chunk_size = self.upload_state.chunk_size as usize;
         let temp_path = &self.upload_state.temp_file_path;
         let file = File::open(temp_path).await.map_err(|err| {
@@ -823,15 +785,15 @@ impl QuarkDavFile {
             let auth_key = auth_res.data.auth_key;
 
             let up_req = UpPartMethodRequest {
-                 auth_key: auth_key.clone(),
-                 mime_type: self.upload_state.mime_type.clone(),
-                 utc_time: utc_time.clone(),
-                 bucket: bucket.clone(),
-                 upload_url: upload_url.clone(),
-                 obj_key: obj_key.clone(),
-                 part_number: chunk_idx as u32,
-                 upload_id: upload_id.to_string(),
-                 part_bytes: buffer.to_vec(),
+                auth_key: auth_key.clone(),
+                mime_type: self.upload_state.mime_type.clone(),
+                utc_time: utc_time.clone(),
+                bucket: bucket.clone(),
+                upload_url: upload_url.clone(),
+                obj_key: obj_key.clone(),
+                part_number: chunk_idx as u32,
+                upload_id: upload_id.to_string(),
+                part_bytes: buffer.to_vec(),
             };
 
             let res = self.fs.drive.up_part(up_req).await.map_err(|err| {
@@ -841,10 +803,10 @@ impl QuarkDavFile {
             let etag_from_up_part = res.unwrap();
             // 检查是否提前完成
             if etag_from_up_part == "finish" {
-
+                return Ok(());
             }
-            etags.push(etag_from_up_part);
-           // self.upload_state.chunk += 1;
+            etags[(chunk_idx - 1) as usize] = etag_from_up_part;
+            // self.upload_state.chunk += 1;
         }
         let callback = self.upload_state.callback.clone().unwrap();
 
@@ -911,11 +873,11 @@ impl DavFile for QuarkDavFile {
             let download_url = self.fs.drive.get_download_url(&self.file.fid).await.unwrap();
 
             return Ok(Some(download_url));
-            
+
         }
             .boxed()
     }
-    
+
 
 
     fn seek(&mut self, pos: SeekFrom) -> FsFuture<u64> {
@@ -945,6 +907,7 @@ impl DavFile for QuarkDavFile {
 
             if self.prepare_for_upload().await? {
                 self.upload_state.buffer.put(buf);
+                self.consume_buf().await?;
             }
             Ok(())
         }
@@ -983,8 +946,8 @@ impl DavFile for QuarkDavFile {
             let download_url = match self.file.download_url.as_ref() {
                 Some(url) => url,
                 None => {
-                        // 详细记录文件信息
-                        println!(
+                    // 详细记录文件信息
+                    println!(
                         "文件缺少下载URL: {:?}\n文件元数据: {:#?}",
                         self.file.download_url,
                         self.file);
@@ -1011,7 +974,7 @@ impl DavFile for QuarkDavFile {
                 return Ok(());
             }
             // let before_task_id = self.upload_state.task_id.clone();
-           // self.prepare_for_upload().await;
+            // self.prepare_for_upload().await;
             if self.upload_state.is_finished {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
                 return Ok(());
@@ -1023,6 +986,52 @@ impl DavFile for QuarkDavFile {
             // if (before_task_id == "") {
             //     return Ok(());
             // }
+
+            let size = self.upload_state.size;
+
+            // up_pre
+            let res = self
+                .fs
+                .drive
+                .up_pre(&self.file.file_name, size, &self.parent_file_id)
+                .await
+                .map_err(|err| {
+                    error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
+                    FsError::GeneralFailure
+                })?;
+
+            if res.data.finish {
+                // 秒传
+                self.upload_state.is_finished = true;
+                return Ok(());
+            }
+            self.upload_state.auth_info = res.data.auth_info;
+            self.upload_state.callback = Some(res.data.callback.clone());
+            self.upload_state.task_id = res.data.task_id.clone();
+            self.upload_state.upload_url =
+                res.data.upload_url
+                    .strip_prefix("https://")
+                    .or_else(|| res.data.upload_url.strip_prefix("http://"))
+                    .unwrap_or(&res.data.upload_url)
+                    .to_string();
+            self.upload_state.bucket = res.data.bucket;
+            self.upload_state.obj_key = res.data.obj_key;
+            if (res.data.format_type != "") {
+                self.upload_state.mime_type = res.data.format_type;
+            }
+
+            self.file.fid = res.data.fid.clone();
+
+            self.upload_state.chunk_size = res.metadata.part_size;
+            let chunk_count =
+                size / res.metadata.part_size + if size % res.metadata.part_size != 0 { 1 } else { 0 };
+            self.upload_state.chunk_count = chunk_count;
+            let Some(upload_id) = res.data.upload_id else {
+                error!("create file with proof failed: missing upload_id");
+                return Err(FsError::GeneralFailure);
+            };
+            self.upload_state.upload_id = upload_id;
+
             // unHash
             let md5 = self.md5_ctx.clone().compute();
             let md5 = format!("{:x}", md5);
