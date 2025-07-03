@@ -915,12 +915,10 @@ impl DavFile for QuarkDavFile {
             .boxed()
     }
 
+    /// write file : open -> metadata -> flush -> write_buf/write_byte -> flush
     fn write_buf(&mut self, buf: Box<dyn bytes::Buf + Send>) -> FsFuture<()>{
         debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: write_buf");
         async move {
-            // uppre -> uphash -> upCommit -> upFinish
-            // TODO :
-
             if self.prepare_for_upload().await? {
                 self.upload_state.buffer.put(buf);
                 self.consume_buf().await?;
