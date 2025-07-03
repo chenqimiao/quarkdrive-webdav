@@ -9,7 +9,10 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::time;
-use tracing::{debug};
+use tracing::{debug, error};
+
+use base64::{Engine as _, engine::{self, general_purpose}, alphabet};
+
 
 use reqwest::{
     header::{HeaderMap, HeaderValue},
@@ -57,7 +60,7 @@ impl DavMetaData for QuarkFile {
     }
 
     fn created(&self) -> FsResult<SystemTime> {
-       Ok(SystemTime::UNIX_EPOCH + Duration::from_millis(self.created_at))
+        Ok(SystemTime::UNIX_EPOCH + Duration::from_millis(self.created_at))
     }
 }
 
@@ -85,7 +88,7 @@ impl QuarkDrive {
             .jitter(Jitter::Bounded)
             .base(2)
             .build_with_max_retries(3);
-            
+
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers)
@@ -99,6 +102,7 @@ impl QuarkDrive {
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
+
         let drive = Self {
             config,
             client,
@@ -139,6 +143,7 @@ impl QuarkDrive {
                         // 4xx
                         ( StatusCode::REQUEST_TIMEOUT
                         | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::FORBIDDEN
                         // 5xx
                         | StatusCode::INTERNAL_SERVER_ERROR
                         | StatusCode::BAD_GATEWAY
@@ -164,29 +169,62 @@ impl QuarkDrive {
     }
 
 
-    async fn post_request<T, U>(&self, url: String, r: &T) -> Result<Option<U>>
+    async fn post_request<T, U>(&self, url: String, r: &T, headers: Option<HeaderMap> ) -> Result<Option<U>>
     where
         T: Serialize + ?Sized,
         U: DeserializeOwned,
     {
         let url = reqwest::Url::parse(&url)?;
-        let res= self
-            .client
-            .post(url.clone())
-            .json(&r)
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+        let res = if let Some(headers) = headers {
+            let is_xml = headers
+                .get("Content-Type")
+                .map(|v| v == "application/xml")
+                .unwrap_or(false);
+            if is_xml {
+                let body = serde_json::to_value(r)?
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| serde_json::to_string(r).unwrap());
+                self.client
+                    .post(url.clone())
+                    .body(body)
+                    .headers(headers)
+                    .send()
+                    .await?
+            }else {
+                self.client
+                    .post(url.clone())
+                    .json(r)
+                    .headers(headers)
+                    .send()
+                    .await?
+            }
+
+        } else {
+            self.client
+                .post(url.clone())
+                .json(r)
+                .header("Content-Type", "application/json")
+                .send()
+                .await?
+        };
+
 
         match res.error_for_status_ref() {
             Ok(_) => {
                 if res.status() == StatusCode::NO_CONTENT {
                     return Ok(None);
                 }
-                // let res = res.text().await?;
-                // println!("{}: {}", url, res);
+
+
+                let text = res.text().await?;
+                debug!("{}: {}", url, text);
                 // let res = serde_json::from_str(&res)?;
-                let res = res.json::<U>().await?;
+                let res = serde_json::from_str::<U>(&text)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;
+
+                // let res = ;
+                // let res = res.json::<U>().await?;
                 Ok(Some(res))
             }
             Err(err) => {
@@ -199,13 +237,14 @@ impl QuarkDrive {
                         // 4xx
                         ( StatusCode::REQUEST_TIMEOUT
                         | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::FORBIDDEN
                         // 5xx
                         | StatusCode::INTERNAL_SERVER_ERROR
                         | StatusCode::BAD_GATEWAY
                         | StatusCode::SERVICE_UNAVAILABLE
                         | StatusCode::GATEWAY_TIMEOUT),
                     ) => {
-                        time::sleep(Duration::from_secs(1)).await;
+                        time::sleep(Duration::from_secs(2)).await;
                         let res = self
                             .client
                             .post(url)
@@ -267,6 +306,7 @@ impl QuarkDrive {
                     self.config.api_base_url
                 ),
                 &req,
+                None
             )
             .await?
             .context("expect response")?;
@@ -278,7 +318,7 @@ impl QuarkDrive {
         self.get_download_urls(vec![fid.to_string()]).await?.iter().next()
             .map(|(_, url)| url.clone())
             .ok_or_else(|| anyhow::anyhow!("No download URL found for fid: {}", fid))
-        
+
     }
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
@@ -302,6 +342,454 @@ impl QuarkDrive {
         Ok(res.bytes().await?)
     }
 
+    pub async fn remove_file(&self, file_id: &str, trash: bool) -> Result<()> {
+        // no untrash api in quark
+        self.delete_file(file_id).await?;
+        Ok(())
+    }
+    pub async fn rename_file(&self, file_id: &str, name: &str) -> Result<()> {
+        debug!(file_id = %file_id, name = %name, "rename file");
+        let req = RenameFileRequest {
+            fid: file_id.to_string(),
+            file_name: name.to_string(),
+        };
+        let res: RenameFileResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/rename?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+    pub async fn move_file(
+        &self,
+        file_id: &str,
+        to_parent_file_id: &str,
+    ) -> Result<()> {
+        debug!(file_id = %file_id, to_parent_file_id = %to_parent_file_id, "move file");
+        let req = MoveFileRequest {
+            filelist: vec![file_id.to_string()],
+            to_pdir_fid: to_parent_file_id.to_string(),
+        };
+        let res: CommonResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/move?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+    async fn delete_file(&self, file_id: &str) -> Result<()> {
+        debug!(file_id = %file_id, "delete file");
+        let req = DeleteFilesRequest {
+            action_type: 2u8,
+            exclude_fids: vec![],
+            filelist: vec![file_id.to_string()],
+        };
+        let res: DeleteFilesResponse = self
+            .post_request(
+                format!(
+                    "{}/1/clouddrive/file/delete?pr=ucpro&fr=pc",
+                    self.config.api_base_url
+                ),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+
+    pub async fn create_folder(&self, parent_file_id: &str, name: &str) -> Result<()> {
+        debug!(parent_file_id = %parent_file_id, name = %name, "create folder");
+        let req = CreateFolderRequest {
+            pdir_fid: parent_file_id.to_string(),
+            file_name: name.to_string(),
+            dir_path: "".to_string(),
+            dir_init_lock: false,
+        };
+        let res: CreateFolderResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(())
+    }
+
+
+    pub async fn get_quota(&self) -> Result<(u64, u64)> {
+        let res: GetSpaceInfoResponse = self
+            .get_request(
+                format!("{}/1/clouddrive/member?pr=ucpro&fr=pc&uc_param_str=&fetch_subscribe=true&_ch=home&fetch_identity=true", self.config.api_base_url),
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok((
+            res.data.use_capacity,
+            res.data.total_capacity,
+        ))
+    }
+
+    pub async fn up_pre(&self, file_name: &str, size: u64, pdir_fid: &str) -> Result<UpPreResponse> {
+
+        let format_type = get_format_type(file_name);
+
+        let req = UpPreRequest {
+            file_name: file_name.to_string(),
+            size,
+            pdir_fid: pdir_fid.to_string(),
+            format_type: format_type.to_string(),
+            ccp_hash_update: true,
+            l_created_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64,
+            l_updated_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64,
+            // 上传文件夹？待确认
+            dir_name: "".to_string(),
+            parallel_upload:true,
+        };
+
+        let res: UpPreResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/pre?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
+
+
+    pub async fn up_hash(&self, md5: &str, sha1: &str, task_id: &str) -> Result<UpHashResponse> {
+
+
+
+        let req = UpHashRequest {
+            md5: md5.to_string(),
+            sha1: sha1.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: UpHashResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/update/hash?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
+
+    pub async fn up_part_auth_meta(
+        &self,
+        mime_type: &str,
+        utc_time: &str,
+        bucket: &str,
+        obj_key: &str,
+        part_number: u32,
+        upload_id: &str,
+    ) -> Result<String> {
+        let r = format!(
+            "PUT\n\n{mime_type}\n{utc_time}\nx-oss-date:{utc_time}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{bucket}/{obj_key}?partNumber={part_number}&uploadId={upload_id}",
+            mime_type = mime_type,
+            utc_time = utc_time,
+            bucket = bucket,
+            obj_key = obj_key,
+            part_number = part_number,
+            upload_id = upload_id
+        );
+        Ok(r)
+    }
+
+    pub fn up_commit_auth_meta(
+        &self,
+        md5s: Vec<String>,
+        callback: &Callback,
+        bucket: &str,
+        obj_key: &str,
+        time_str: &str,
+        upload_id: &str,
+    ) -> Result<String> {
+        // 构建XML内容
+        let mut xml_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n");
+
+        for (i, md5) in md5s.iter().enumerate() {
+            xml_body.push_str(&format!(
+                "<Part>\n<PartNumber>{}</PartNumber>\n<ETag>{}</ETag>\n</Part>\n",
+                i + 1,
+                md5
+            ));
+        }
+        xml_body.push_str("</CompleteMultipartUpload>");
+
+        // 计算XML内容的MD5
+        let digest = md5::compute(xml_body.as_bytes());
+        let content_md5 = general_purpose::STANDARD.encode(digest.0);
+        // 序列化callback并Base64编码
+        let callback_bytes = serde_json::to_vec(callback)?;
+        let callback_base64 = general_purpose::STANDARD.encode(&callback_bytes);
+
+
+        // 构建auth_meta字符串
+        let auth_meta = format!(
+            "POST\n{}\napplication/xml\n{}\nx-oss-callback:{}\nx-oss-date:{}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{}/{}?uploadId={}",
+            content_md5,
+            time_str,
+            callback_base64,
+            time_str,
+            bucket,
+            obj_key,
+            upload_id
+        );
+        Ok(auth_meta)
+    }
+    pub async fn auth(&self, auth_info: &str, auth_meta: &str, task_id: &str) -> Result<AuthResponse> {
+
+        let req = AuthRequest {
+            auth_info: auth_info.to_string(),
+            auth_meta: auth_meta.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: AuthResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/auth?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        Ok(res)
+    }
+
+    pub async fn up_auth_and_commit(&self,
+                                    req: UpAuthAndCommitRequest
+    ) -> Result<()> {
+        // 构建XML内容
+        let mut xml_body = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<CompleteMultipartUpload>\n");
+
+        for (i, md5) in req.md5s.iter().enumerate() {
+            xml_body.push_str(&format!(
+                "<Part>\n<PartNumber>{}</PartNumber>\n<ETag>{}</ETag>\n</Part>\n",
+                i + 1,
+                md5
+            ));
+        }
+        xml_body.push_str("</CompleteMultipartUpload>");
+
+        // 计算XML内容的MD5
+        let digest = md5::compute(xml_body.as_bytes());
+
+        let content_md5 = general_purpose::STANDARD.encode(digest.0);
+
+        // 序列化callback并Base64编码
+        let callback_bytes = serde_json::to_vec(&req.callback)?;
+        let callback_base64 = general_purpose::STANDARD.encode(&callback_bytes);
+
+        let now = chrono::Utc::now();
+        let time_str = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+        //let timestamp = now.timestamp_millis();
+
+        // 构建auth_meta字符串
+        let auth_meta = format!(
+            "POST\n{}\napplication/xml\n{}\nx-oss-callback:{}\nx-oss-date:{}\nx-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit\n/{}/{}?uploadId={}",
+            content_md5,
+            &time_str,
+            callback_base64,
+            &time_str,
+            req.bucket,
+            req.obj_key,
+            req.upload_id
+        );
+        let auth_key = self.auth(&req.auth_info, &auth_meta, &req.task_id).await
+            .map_err(|e| {
+                error!(error = %e, "Failed to authenticate and commit upload");
+                e
+            }).unwrap().data.auth_key;
+
+        let commit_url = format!(
+            "https://{}.{}/{}?uploadId={}",
+            req.bucket,
+            req.upload_url, // 去掉 https://
+            req.obj_key,
+            req.upload_id
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Authorization", HeaderValue::from_str(&auth_key)?);
+        headers.insert("Content-MD5", HeaderValue::from_str(&content_md5)?);
+        headers.insert("Content-Type", HeaderValue::from_str("application/xml")?);
+        headers.insert("x-oss-callback", HeaderValue::from_str(&callback_base64)?);
+        headers.insert("x-oss-date", HeaderValue::from_str(&time_str)?);
+        headers.insert("x-oss-user-agent", HeaderValue::from_str("aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")?);
+        headers.insert("Referer", HeaderValue::from_str(REFERER)?);
+
+        println!("{:#?}", headers);
+        let _res: EmptyResponse = self.post_request(commit_url, &xml_body, Some(headers)) .await?.context("expect response")?;
+
+        Ok(())
+
+
+
+    }
+    pub async fn finish(&self, obj_key: &str, task_id: &str) -> Result<FinishResponse> {
+
+        let req = FinishRequest {
+            obj_key: obj_key.to_string(),
+            task_id: task_id.to_string(),
+        };
+
+        let res: FinishResponse = self
+            .post_request(
+                format!("{}/1/clouddrive/file/upload/finish?pr=ucpro&fr=pc", self.config.api_base_url),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+
+        if res.status != 200 {
+            return Err(anyhow::anyhow!("delete file failed: {}", res.message));
+        }
+        // // sleep 500 sec for quark drive to process the finish request
+        // time::sleep(Duration::from_secs(500)).await;
+        Ok(res)
+    }
+
+    pub async fn up_part(&self, req: UpPartMethodRequest) -> Result<Option<String>> {
+        let oss_url = format!(
+            "https://{}.{}//{}?partNumber={}&uploadId={}",
+            req.bucket,
+            req.upload_url, // 去掉 https://
+            req.obj_key,
+            req.part_number,
+            req.upload_id
+        );
+        let url = reqwest::Url::parse(&oss_url)?;
+        let res = self
+            .client
+            .put(url.clone())
+            .header("Authorization", req.auth_key.clone())
+            .header("Content-Type", req.mime_type.clone())
+            .header("x-oss-date", req.utc_time.clone())
+            .header("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
+            .header("Referer", REFERER)
+            .body(req.part_bytes)
+            .send().await?;
+
+        match res.error_for_status_ref() {
+            Ok(_) => {
+                if res.status() == StatusCode::NO_CONTENT {
+                    return Ok(None);
+                }
+                let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
+                return Ok(Some(etag.to_string()));
+            }
+            Err(err) => {
+                let err_msg = res.text().await?;
+                debug!(error = %err_msg, url = %url, "request failed");
+                match err.status() {
+                    Some(
+                        _status_code
+                        @
+                        (StatusCode::REQUEST_TIMEOUT
+                        | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::INTERNAL_SERVER_ERROR
+                        | StatusCode::BAD_GATEWAY
+                        | StatusCode::SERVICE_UNAVAILABLE
+                        | StatusCode::GATEWAY_TIMEOUT),
+                    ) => {
+                        time::sleep(Duration::from_secs(2)).await;
+                        let res = self
+                            .client
+                            .put(url)
+                            .send()
+                            .await?
+                            .error_for_status()?;
+                        if res.status() == StatusCode::NO_CONTENT {
+                            return Ok(None);
+                        }
+                        let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
+                        Ok(Some(etag.to_string()))
+                    }
+                    // unexpected error
+                    _ => {
+                        debug!(error = %err, "request failed");
+                        Err(err.into())
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+fn get_format_type(file_name: &str) -> &str {
+    if let Some(ext) = file_name.rsplit('.').next() {
+        let ext = ext.to_lowercase();
+        match ext.as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "mp4" => "video/mp4",
+            "avi" => "video/x-msvideo",
+            "mov" => "video/quicktime",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "pdf" => "application/pdf",
+            "doc" | "docx" => "application/msword",
+            "xls" | "xlsx" => "application/vnd.ms-excel",
+            "ppt" | "pptx" => "application/vnd.ms-powerpoint",
+            "txt" => "text/plain",
+            "zip" => "application/zip",
+            "rar" => "application/vnd.rar",
+            "7z" => "application/x-7z-compressed",
+            _ => "application/octet-stream",
+        }
+    } else {
+        "application/octet-stream"
+    }
 }
 
 #[cfg(test)]

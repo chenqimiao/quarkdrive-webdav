@@ -16,6 +16,8 @@ pub struct QuarkFile {
     pub dir: bool,
     pub file: bool,
     pub download_url:Option<String>,
+    pub content_hash: Option<String>,
+    pub parent_path: Option<String>,
 }
 
 
@@ -26,6 +28,7 @@ impl QuarkFile {
             pdir_fid: "".to_string(),
             size: 0u64,
             format_type: "".to_string(),
+            parent_path: None,
             status: 1u8,
             created_at: now,
             updated_at: now,
@@ -34,6 +37,7 @@ impl QuarkFile {
             file_name: "".to_string(),
             fid: "0".to_string(),
             download_url: None,
+            content_hash: None,
         }
     }
 }
@@ -63,9 +67,103 @@ pub struct GetFileItem {
 }
 
 
+#[derive(Debug, Serialize, Clone)]
+pub struct DeleteFilesRequest {
+    pub action_type: u8,
+    pub exclude_fids: Vec<String>,
+    pub filelist: Vec<String>,
+}
+
+
+#[derive(Debug, Serialize, Clone)]
+pub struct CreateFolderRequest {
+    pub pdir_fid: String,
+    pub file_name: String,
+    pub dir_path: String,
+    pub dir_init_lock: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct RenameFileRequest {
+    pub fid: String,
+    pub file_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct MoveFileRequest {
+    pub filelist: Vec<String>,
+    pub to_pdir_fid: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UpPreRequest {
+    pub file_name: String,
+    pub size: u64,
+    pub pdir_fid: String,
+    pub format_type: String,
+    pub ccp_hash_update: bool,
+    pub l_created_at: u64,
+    pub l_updated_at: u64,
+    pub parallel_upload: bool,
+    pub dir_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UpHashRequest {
+    pub md5: String,
+    pub sha1: String,
+    pub task_id: String,
+}
+
+
+#[derive(Debug, Serialize, Clone)]
+pub struct AuthRequest {
+    pub auth_info: String,
+    pub auth_meta: String,
+    pub task_id: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct FinishRequest {
+    pub obj_key: String,
+    pub task_id: String,
+}
+
+
+pub struct UpPartMethodRequest {
+    pub auth_key: String,
+    pub mime_type: String,
+    pub utc_time: String,
+    pub bucket: String,
+    pub upload_url: String,
+    pub obj_key: String,
+    pub part_number: u32,
+    pub upload_id: String,
+    pub part_bytes: Vec<u8>,
+}
+
+
 pub type GetFilesResponse = Response<FilesData, FilesMetadata>;
 
 pub type GetFilesDownloadUrlsResponse = Response<Vec<FileDownloadUrlItem>, FileDownloadUrlMetadata>;
+
+pub type DeleteFilesResponse = Response<DeleteFilesData, DeleteFilesMetadata>;
+
+pub type CreateFolderResponse = Response<CreateFolderData, EmptyMetadata>;
+
+pub type RenameFileResponse = Response<EmptyData, EmptyMetadata>;
+
+pub type CommonResponse = Response<EmptyData, EmptyMetadata>;
+
+pub type GetSpaceInfoResponse = Response<GetSpaceInfoResponseData, EmptyMetadata>;
+pub type UpPreResponse = Response<UpPreResponseData, UpPreResponseMetaData>;
+
+pub type UpHashResponse = Response<UpHashResponseData, EmptyMetadata>;
+
+pub type AuthResponse = Response<AuthResponseData, EmptyMetadata>;
+
+pub type FinishResponse = Response<EmptyData, EmptyMetadata>;
+
 
 impl GetFilesDownloadUrlsResponse {
     pub fn into_map(self) -> HashMap<String, String> {
@@ -84,6 +182,13 @@ pub struct Response<T, U> {
 
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct EmptyResponse {
+
+}
+
+
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct FilesData {
     pub list: Vec<QuarkFile>,
 
@@ -97,13 +202,44 @@ pub struct FilesMetadata {
     pub count: u32,
     #[serde(rename = "_page")]
     pub page: u32,
-    
+
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteFilesData {
+    pub task_id: String,
+    pub finish: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteFilesMetadata {
+    pub tq_gap: u32,
+}
+
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateFolderData {
+    pub finish: bool,
+    pub fid: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmptyMetadata {
+
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmptyData {
+
+}
+
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuarkFiles {
     pub list: Vec<QuarkFile>,
     pub total: u32,
 }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDownloadUrlItem {
     pub fid: String,
@@ -112,8 +248,73 @@ pub struct FileDownloadUrlItem {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileDownloadUrlMetadata {
-    
+
 }
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetSpaceInfoResponseData {
+    pub total_capacity: u64,
+    pub use_capacity: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetSpaceInfoResponseMetaData {
+
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthResponseData {
+    pub auth_key: String,
+}
+
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpPreResponseData {
+    pub finish: bool,
+    pub task_id: String,
+    pub upload_id: Option<String>,
+    pub auth_info: String,
+    pub upload_url: String,
+    pub obj_key: String,
+    pub fid: String,
+    pub bucket: String,
+    pub format_type: String,
+    pub auth_info_expried: u64,
+    pub callback: Callback,
+
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpAuthAndCommitRequest {
+    pub md5s: Vec<String>,
+    pub callback: Callback,
+    pub bucket: String,
+    pub obj_key: String,
+    pub upload_id: String,
+    pub auth_info: String,
+    pub task_id: String,
+    pub upload_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Callback {
+    #[serde(rename = "callbackUrl")]
+    pub callback_url: String,
+    #[serde(rename = "callbackBody")]
+    pub callback_body: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpPreResponseMetaData {
+    pub part_size: u64,
+    pub part_thread: u32
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpHashResponseData {
+    pub finish: bool,
+}
+
+
+
 
 impl From<GetFilesResponse> for QuarkFiles {
     fn from(response: GetFilesResponse) -> Self {

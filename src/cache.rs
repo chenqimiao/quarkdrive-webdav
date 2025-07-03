@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 use moka::future::Cache as MokaCache;
 use tracing::debug;
-use crate::drive::{DriveConfig, QuarkDrive};
+use crate::drive::{QuarkDrive};
 use crate::drive::model::QuarkFile;
 
 #[derive(Clone)]
@@ -38,16 +38,22 @@ impl Cache {
                     break;
                 }
                 path = parent;
-                if (path.to_str() == Some("/")) {
+                if path.to_str() == Some("/") {
                     break;
                 }
             }
-            if (path.to_str() == Some("/")) {
+            if path.to_str() == Some("/") {
                 self.dfs(QuarkFile::new_root(), key, "/").await;
             }else {
                 let dsf_root_file = cached_files.iter().filter(|quark_file| {
                     quark_file.file_name == path.to_str().unwrap().split("/").last().unwrap()
-                }).last().cloned().unwrap();
+                }).last().cloned()
+                    .unwrap_or_else(|| {
+                        debug!(key = %key, "cache: no root file found for dfs");
+                        //QuarkFile::new_root()
+                        // throw exception 
+                        panic!("No root file found for DFS in cache for key: {}", key)
+                    });
                 self.dfs(dsf_root_file, key, path.to_str().unwrap()).await;
             }
 
@@ -64,8 +70,21 @@ impl Cache {
         if file.dir {
             let mut current_files = Vec::<QuarkFile>::new();
             for page_no in 1..=20 {
-                let (files, total) = self.drive.get_files_by_pdir_fid(&file.fid, page_no, ONE_PAGE).await.unwrap();
-                let files = files.unwrap();
+                let (files, total) =
+                    match self.drive.get_files_by_pdir_fid(&file.fid, page_no, ONE_PAGE).await{
+                    Ok((k, v)) => (k, v),
+                    Err(e) => {
+                        debug!(error = %e, file_id = &file.fid, file_name = &file.file_name,
+                                page_no = page_no,
+                            "Failed to get files from drive");
+                        return;
+                    }
+                };
+                let mut files = files.unwrap();
+                // add dfs_path to each file
+                for f in files.list.iter_mut() {
+                    f.parent_path = Some(dfs_path.to_string());
+                }
                 let size = files.list.len();
                 current_files.extend(files.list);
                 // guess: es limit is 10000

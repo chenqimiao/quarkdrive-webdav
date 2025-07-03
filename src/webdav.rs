@@ -16,11 +16,10 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 // #[cfg(feature = "rustls-tls")]
-use {
-    std::fs::File,
-    std::path::Path,
-    std::sync::Arc,
-};
+// use {
+//     std::path::Path,
+//     std::sync::Arc,
+// };
 
 pub struct WebDavServer {
     pub host: String,
@@ -104,7 +103,7 @@ impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
                     _ => {
                         return Ok(Response::builder()
                             .status(401)
-                            .header("WWW-Authenticate", "Basic realm=\"quarkdriver-webdav\"")
+                            .header("WWW-Authenticate", "Basic realm=\"quarkdrive-webdav\"")
                             .body(Body::from("Authentication required"))
                             .unwrap());
                     }
