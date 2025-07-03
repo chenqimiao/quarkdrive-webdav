@@ -143,6 +143,7 @@ impl QuarkDrive {
                         // 4xx
                         ( StatusCode::REQUEST_TIMEOUT
                         | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::FORBIDDEN
                         // 5xx
                         | StatusCode::INTERNAL_SERVER_ERROR
                         | StatusCode::BAD_GATEWAY
@@ -236,6 +237,7 @@ impl QuarkDrive {
                         // 4xx
                         ( StatusCode::REQUEST_TIMEOUT
                         | StatusCode::TOO_MANY_REQUESTS
+                        | StatusCode::FORBIDDEN
                         // 5xx
                         | StatusCode::INTERNAL_SERVER_ERROR
                         | StatusCode::BAD_GATEWAY

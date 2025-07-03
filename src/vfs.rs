@@ -387,6 +387,10 @@ impl DavFileSystem for QuarkDriveFileSystem {
             if !parent_file.dir {
                 return Err(FsError::Forbidden);
             }
+            // check if the folder already exists
+            if self.get_file(path.clone()).await?.is_some() {
+                return Err(FsError::Exists);
+            }
             if let Some(name) = path.file_name() {
                 self.dir_cache.invalidate(parent_path).await;
                 let name = name.to_string_lossy().into_owned();
