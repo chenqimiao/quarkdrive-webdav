@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 use moka::future::Cache as MokaCache;
 use tracing::debug;
-use crate::drive::{DriveConfig, QuarkDrive};
+use crate::drive::{QuarkDrive};
 use crate::drive::model::QuarkFile;
 
 #[derive(Clone)]
@@ -38,11 +38,11 @@ impl Cache {
                     break;
                 }
                 path = parent;
-                if (path.to_str() == Some("/")) {
+                if path.to_str() == Some("/") {
                     break;
                 }
             }
-            if (path.to_str() == Some("/")) {
+            if path.to_str() == Some("/") {
                 self.dfs(QuarkFile::new_root(), key, "/").await;
             }else {
                 let dsf_root_file = cached_files.iter().filter(|quark_file| {

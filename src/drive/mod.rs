@@ -11,13 +11,15 @@ use serde::Serialize;
 use tokio::time;
 use tracing::{debug, error};
 
+use base64::{Engine as _, engine::{self, general_purpose}, alphabet};
+
 
 use reqwest::{
     header::{HeaderMap, HeaderValue},
     IntoUrl, StatusCode,
 };
 
-use dav_server::fs::{DavDirEntry, DavMetaData, FsError, FsFuture, FsResult};
+use dav_server::fs::{DavDirEntry, DavMetaData, FsFuture, FsResult};
 
 
 use bytes::Bytes;
@@ -172,9 +174,8 @@ impl QuarkDrive {
         U: DeserializeOwned,
     {
         let url = reqwest::Url::parse(&url)?;
-        let mut is_xml = false;
         let res = if let Some(headers) = headers {
-            is_xml = headers
+            let is_xml = headers
                 .get("Content-Type")
                 .map(|v| v == "application/xml")
                 .unwrap_or(false);
@@ -558,11 +559,11 @@ impl QuarkDrive {
 
         // 计算XML内容的MD5
         let digest = md5::compute(xml_body.as_bytes());
-        let content_md5 = base64::encode(&digest.0);
-
+        let content_md5 = general_purpose::STANDARD.encode(digest.0);
         // 序列化callback并Base64编码
         let callback_bytes = serde_json::to_vec(callback)?;
-        let callback_base64 = base64::encode(&callback_bytes);
+        let callback_base64 = general_purpose::STANDARD.encode(&callback_bytes);
+
 
         // 构建auth_meta字符串
         let auth_meta = format!(
@@ -615,17 +616,15 @@ impl QuarkDrive {
         }
         xml_body.push_str("</CompleteMultipartUpload>");
 
-        println!("Xml Body: {}", xml_body);
-
         // 计算XML内容的MD5
         let digest = md5::compute(xml_body.as_bytes());
 
-        let content_md5 = base64::encode(&digest.0);
-        println!("MD5: {}", content_md5);
+        let content_md5 = general_purpose::STANDARD.encode(digest.0);
 
         // 序列化callback并Base64编码
         let callback_bytes = serde_json::to_vec(&req.callback)?;
-        let callback_base64 = base64::encode(&callback_bytes);
+        let callback_base64 = general_purpose::STANDARD.encode(&callback_bytes);
+
         let now = chrono::Utc::now();
         let time_str = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
         //let timestamp = now.timestamp_millis();
@@ -691,8 +690,8 @@ impl QuarkDrive {
         if res.status != 200 {
             return Err(anyhow::anyhow!("delete file failed: {}", res.message));
         }
-        // sleep 1 sec for quark drive to process the finish request
-        time::sleep(Duration::from_secs(1)).await;
+        // // sleep 500 sec for quark drive to process the finish request
+        // time::sleep(Duration::from_secs(500)).await;
         Ok(res)
     }
 

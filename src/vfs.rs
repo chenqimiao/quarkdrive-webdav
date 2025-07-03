@@ -372,7 +372,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
             .boxed()
     }
 
-    fn create_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+    fn create_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<'a, ()> {
         let path = self.normalize_dav_path(dav_path);
         debug!(path = %path.display(), "fs: create_dir");
         async move {
@@ -414,7 +414,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
     }
 
 
-    fn remove_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+    fn remove_dir<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<'a, ()> {
         let path = self.normalize_dav_path(dav_path);
         debug!(path = %path.display(), "fs: remove_dir");
         async move {
@@ -443,7 +443,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
             .boxed()
     }
 
-    fn remove_file<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<()> {
+    fn remove_file<'a>(&'a self, dav_path: &'a DavPath) -> FsFuture<'a, ()> {
         let path = self.normalize_dav_path(dav_path);
         debug!(path = %path.display(), "fs: remove_file");
         async move {
@@ -473,14 +473,14 @@ impl DavFileSystem for QuarkDriveFileSystem {
             .boxed()
     }
 
-    fn copy<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<()> {
+    fn copy<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<'a, ()> {
         // not support by quark api
         async move {
             Err(FsError::NotImplemented)
         }.boxed()
     }
 
-    fn rename<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<()> {
+    fn rename<'a>(&'a self, from_dav: &'a DavPath, to_dav: &'a DavPath) -> FsFuture<'a, ()> {
         let from = self.normalize_dav_path(from_dav);
         let to = self.normalize_dav_path(to_dav);
         debug!(from = %from.display(), to = %to.display(), "fs: rename");
@@ -720,7 +720,7 @@ impl QuarkDavFile {
                 error!("failed to open file: {}, {}", temp_path, e);
                 FsError::GeneralFailure
             })?;
-        file.write_all(&bytes).await.map_err(|e| {;
+        file.write_all(&bytes).await.map_err(|e| {
             error!(file_name = %self.file.file_name, error = %e, "write to temp file failed");
             FsError::GeneralFailure
         })?;
@@ -781,7 +781,7 @@ impl QuarkDavFile {
             })?;
             let auth_info = &self.upload_state.auth_info;
 
-            let auth_res = self.fs.drive.auth(auth_info, &auth_meta, task_id).await.map_err(|err| {;
+            let auth_res = self.fs.drive.auth(auth_info, &auth_meta, task_id).await.map_err(|err| {
                 error!(file_name = %self.file.file_name, error = %err, "auth upload part failed");
                 FsError::GeneralFailure
             })?;
@@ -827,7 +827,7 @@ impl QuarkDavFile {
             upload_url: upload_url.clone(),
         };
         // commit
-        self.fs.drive.up_auth_and_commit(commit_req).await.map_err(|err| {;
+        self.fs.drive.up_auth_and_commit(commit_req).await.map_err(|err| {
             error!(file_name = %self.file.file_name, error = %err, "commit upload failed");
             FsError::GeneralFailure
         })?;
@@ -1022,7 +1022,7 @@ impl DavFile for QuarkDavFile {
                     .to_string();
             self.upload_state.bucket = res.data.bucket;
             self.upload_state.obj_key = res.data.obj_key;
-            if (res.data.format_type != "") {
+            if res.data.format_type != "" {
                 self.upload_state.mime_type = res.data.format_type;
             }
 
@@ -1044,7 +1044,7 @@ impl DavFile for QuarkDavFile {
             let sha1 = self.sha1_ctx.clone().finalize();
             let sha1 = format!("{:x}", sha1);
             let task_id = self.upload_state.task_id.clone();
-            let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {;
+            let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {
                 error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
                 FsError::GeneralFailure
             })?;
