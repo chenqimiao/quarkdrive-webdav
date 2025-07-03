@@ -11,7 +11,7 @@ repository = "https://github.com/chenqimiao/quarkdrive-webdav.git"
 readme = "README.md"
 
 [dependencies]
-quick-xml = { version = "0.38.0", features = ["serde","serialize"] }
+#quick-xml = { version = "0.38.0", features = ["serde","serialize"] }
 md5 = "0.7.0"
 sha1 = "0.10.0"
 log = "0.4"
