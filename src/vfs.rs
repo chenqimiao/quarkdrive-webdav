@@ -704,7 +704,75 @@ impl QuarkDavFile {
 
     }
 
-    async fn upload_mini_byte_file(&mut self) -> Result<(), FsError> {
+    async fn do_flush(&mut self) -> Result<(), FsError> {
+        let size = self.upload_state.size;
+
+        // up_pre
+        let res = self
+            .fs
+            .drive
+            .up_pre(&self.file.file_name, size, &self.parent_file_id)
+            .await
+            .map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
+                FsError::GeneralFailure
+            })?;
+
+        if res.data.finish {
+            // 秒传
+            self.upload_state.is_finished = true;
+            self.after_flush().await?;
+            return Ok(());
+        }
+        self.upload_state.auth_info = res.data.auth_info;
+        self.upload_state.callback = Some(res.data.callback.clone());
+        self.upload_state.task_id = res.data.task_id.clone();
+        self.upload_state.upload_url =
+            res.data.upload_url
+                .strip_prefix("https://")
+                .or_else(|| res.data.upload_url.strip_prefix("http://"))
+                .unwrap_or(&res.data.upload_url)
+                .to_string();
+        self.upload_state.bucket = res.data.bucket;
+        self.upload_state.obj_key = res.data.obj_key;
+        if res.data.format_type != "" {
+            self.upload_state.mime_type = res.data.format_type;
+        }
+
+        self.file.fid = res.data.fid.clone();
+
+        self.upload_state.chunk_size = res.metadata.part_size;
+        let chunk_count =
+            size / res.metadata.part_size + if size % res.metadata.part_size != 0 { 1 } else { 0 };
+        self.upload_state.chunk_count = chunk_count;
+        let Some(upload_id) = res.data.upload_id else {
+            error!("create file with proof failed: missing upload_id");
+            return Err(FsError::GeneralFailure);
+        };
+        self.upload_state.upload_id = upload_id;
+
+        // unHash
+        let md5 = self.md5_ctx.clone().compute();
+        let md5 = format!("{:x}", md5);
+        let sha1 = self.sha1_ctx.clone().finalize();
+        let sha1 = format!("{:x}", sha1);
+        let task_id = self.upload_state.task_id.clone();
+        let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {
+            error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
+            FsError::GeneralFailure
+        })?;
+        if res.data.finish {
+            self.upload_state.is_finished = true;
+            self.after_flush().await?;
+            return Ok(());
+        }
+        self.upload_chunk().await?;
+        self.after_flush().await?;
+        Ok(())
+    }
+
+
+        async fn upload_mini_byte_file(&mut self) -> Result<(), FsError> {
         // pre -> hash -> commit -> finish
         // up_pre
         let res = self
@@ -1096,69 +1164,12 @@ impl DavFile for QuarkDavFile {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
                 return Ok(());
             }
-            let size = self.upload_state.size;
-
-            // up_pre
-            let res = self
-                .fs
-                .drive
-                .up_pre(&self.file.file_name, size, &self.parent_file_id)
-                .await
-                .map_err(|err| {
-                    error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
-                    FsError::GeneralFailure
-                })?;
-
-            if res.data.finish {
-                // 秒传
-                self.upload_state.is_finished = true;
+            let res = self.do_flush().await;
+            if let Err(err) = res {
+                error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "file: flush failed");
                 self.after_flush().await?;
-                return Ok(());
+                return Err(err);
             }
-            self.upload_state.auth_info = res.data.auth_info;
-            self.upload_state.callback = Some(res.data.callback.clone());
-            self.upload_state.task_id = res.data.task_id.clone();
-            self.upload_state.upload_url =
-                res.data.upload_url
-                    .strip_prefix("https://")
-                    .or_else(|| res.data.upload_url.strip_prefix("http://"))
-                    .unwrap_or(&res.data.upload_url)
-                    .to_string();
-            self.upload_state.bucket = res.data.bucket;
-            self.upload_state.obj_key = res.data.obj_key;
-            if res.data.format_type != "" {
-                self.upload_state.mime_type = res.data.format_type;
-            }
-
-            self.file.fid = res.data.fid.clone();
-
-            self.upload_state.chunk_size = res.metadata.part_size;
-            let chunk_count =
-                size / res.metadata.part_size + if size % res.metadata.part_size != 0 { 1 } else { 0 };
-            self.upload_state.chunk_count = chunk_count;
-            let Some(upload_id) = res.data.upload_id else {
-                error!("create file with proof failed: missing upload_id");
-                return Err(FsError::GeneralFailure);
-            };
-            self.upload_state.upload_id = upload_id;
-
-            // unHash
-            let md5 = self.md5_ctx.clone().compute();
-            let md5 = format!("{:x}", md5);
-            let sha1 = self.sha1_ctx.clone().finalize();
-            let sha1 = format!("{:x}", sha1);
-            let task_id = self.upload_state.task_id.clone();
-            let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {
-                error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
-                FsError::GeneralFailure
-            })?;
-            if res.data.finish {
-                self.upload_state.is_finished = true;
-                self.after_flush().await?;
-                return Ok(());
-            }
-            self.upload_chunk().await?;
-            self.after_flush().await?;
             Ok(())
         }.boxed()
 
