@@ -563,7 +563,6 @@ struct UploadState {
     chunk_size: u64,
     chunk: u64,
     upload_id: String,
-    // upload_urls: Vec<String>,
     upload_url: String,
     sha1: Option<String>,
     task_id: String,
@@ -573,7 +572,9 @@ struct UploadState {
     obj_key: String,
     mime_type: String,
     auth_info: String,
-    callback: Option<Callback>
+    callback: Option<Callback>,
+    is_uploading: bool,
+
 }
 
 impl Default for UploadState {
@@ -595,6 +596,7 @@ impl Default for UploadState {
             mime_type: "application/octet-stream".to_string(),
             auth_info: "".to_string(),
             callback: None,
+            is_uploading: false,
         }
     }
 }
@@ -651,6 +653,9 @@ impl QuarkDavFile {
     async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
         if self.upload_state.is_finished  {
             return Ok(false);
+        }
+        if !self.upload_state.is_uploading {
+           self.upload_state.is_uploading = true;
         }
         if self.upload_state.chunk_count == 0 {
             let size = self.upload_state.size;
@@ -845,6 +850,17 @@ impl QuarkDavFile {
         Ok(())
     }
 
+    async fn after_flush(&mut self) -> Result<(), FsError> {
+        self.delete_temp_file().await?;
+        let parent_path = self.file.parent_path.as_ref().unwrap().as_str();
+        self.fs.remove_uploading_file(parent_path, &self.file.file_name);
+        self.upload_state = UploadState::default();
+        // sleep 500ms for quark server to update cache
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
+        Ok(())
+    }
+
     async fn get_download_url(&self) -> Result<String, FsError> {
         self.fs.drive.get_download_url(&self.file.fid).await.map_err(|err| {
             error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "get download url failed");
@@ -969,24 +985,15 @@ impl DavFile for QuarkDavFile {
     fn flush(&mut self) -> FsFuture<()> {
         debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush");
         async move {
-            if self.upload_state.temp_file_path == "" {
+            if !self.upload_state.is_uploading {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - no temp file path");
                 return Ok(());
             }
-            // let before_task_id = self.upload_state.task_id.clone();
-            // self.prepare_for_upload().await;
+
             if self.upload_state.is_finished {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - already finished");
                 return Ok(());
             }
-            // if self.upload_state.buffer.is_empty() {
-            //     debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - no data to upload");
-            //     return Ok(());
-            // }
-            // if (before_task_id == "") {
-            //     return Ok(());
-            // }
-
             let size = self.upload_state.size;
 
             // up_pre
@@ -1003,6 +1010,7 @@ impl DavFile for QuarkDavFile {
             if res.data.finish {
                 // 秒传
                 self.upload_state.is_finished = true;
+                self.after_flush().await?;
                 return Ok(());
             }
             self.upload_state.auth_info = res.data.auth_info;
@@ -1044,26 +1052,14 @@ impl DavFile for QuarkDavFile {
             })?;
             if res.data.finish {
                 self.upload_state.is_finished = true;
-                self.delete_temp_file().await?;
+                self.after_flush().await?;
                 return Ok(());
             }
             self.upload_chunk().await?;
-            self.fs.dir_cache.invalidate(&self.parent_dir.as_path()).await;
-            self.upload_state.is_finished = true;
-            self.delete_temp_file().await?;
-            let parent_path = self.file.parent_path.as_ref().unwrap().as_str();
-            self.fs.remove_uploading_file(parent_path, &self.file.file_name);
-            // sleep 500ms for quark server to update cache
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
+            self.after_flush().await?;
             Ok(())
         }.boxed()
 
-        // // return empty future
-        // async move {
-        //
-        //     Ok(())
-        // }.boxed()
     }
 }
 
