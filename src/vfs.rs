@@ -539,6 +539,9 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 }
             }
 
+
+            // sleep 1s for quark server to update cache
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             if is_dir {
                 self.dir_cache.invalidate(&from).await;
             }
