@@ -575,6 +575,7 @@ struct UploadState {
     auth_info: String,
     callback: Option<Callback>,
     is_uploading: bool,
+    flush_count: u32,
 
 }
 
@@ -598,6 +599,7 @@ impl Default for UploadState {
             auth_info: "".to_string(),
             callback: None,
             is_uploading: false,
+            flush_count: 0,
         }
     }
 }
@@ -701,6 +703,97 @@ impl QuarkDavFile {
         Ok(true)
 
     }
+
+    async fn upload_mini_byte_file(&mut self) -> Result<(), FsError> {
+        // pre -> hash -> commit -> finish
+        // up_pre
+        let res = self
+            .fs
+            .drive
+            .up_pre(&self.file.file_name, 0, &self.parent_file_id)
+            .await
+            .map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "create file with proof failed");
+                FsError::GeneralFailure
+            })?;
+
+        if res.data.finish {
+            // 秒传
+            self.upload_state.is_finished = true;
+            self.after_flush().await?;
+            return Ok(());
+        }
+        self.upload_state.auth_info = res.data.auth_info;
+        self.upload_state.callback = Some(res.data.callback.clone());
+        self.upload_state.task_id = res.data.task_id.clone();
+        self.upload_state.upload_url =
+            res.data.upload_url
+                .strip_prefix("https://")
+                .or_else(|| res.data.upload_url.strip_prefix("http://"))
+                .unwrap_or(&res.data.upload_url)
+                .to_string();
+        self.upload_state.bucket = res.data.bucket;
+        self.upload_state.obj_key = res.data.obj_key;
+        if res.data.format_type != "" {
+            self.upload_state.mime_type = res.data.format_type;
+        }
+
+        self.file.fid = res.data.fid.clone();
+
+        self.upload_state.chunk_size = 0;
+        let chunk_count = 1 ;
+        self.upload_state.chunk_count = chunk_count;
+        let Some(upload_id) = res.data.upload_id else {
+            error!("create file with proof failed: missing upload_id");
+            return Err(FsError::GeneralFailure);
+        };
+        self.upload_state.upload_id = upload_id;
+
+        // unHash
+        let md5 = "d41d8cd98f00b204e9800998ecf8427e";
+        let sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        let task_id = self.upload_state.task_id.clone();
+        let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {
+            error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
+            FsError::GeneralFailure
+        })?;
+        if res.data.finish {
+            self.upload_state.is_finished = true;
+            self.after_flush().await?;
+            return Ok(());
+        }
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
+
+        // 创建一个空白文件txt
+        let empty_file_content = b"";
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&self.upload_state.temp_file_path)
+            .await
+            .map_err(|e| {
+                error!(file_name = %self.file.file_name, error = %e, "failed to create temp file");
+                FsError::GeneralFailure
+            })?;
+        file.write_all(empty_file_content).await.map_err(|e| {
+            error!(file_name = %self.file.file_name, error = %e, "write to temp file failed");
+            FsError::GeneralFailure
+        })?;
+        file.flush().await.map_err(|e| {
+            error!(file_name = %self.file.file_name, error = %e, "flush temp file failed");
+            FsError::GeneralFailure
+        })?;
+        self.upload_chunk().await?;
+        self.after_flush().await?;
+
+        Ok(())
+    }
+
+
     async fn consume_buf(&mut self) -> Result<(), FsError> {
         let temp_path = self.upload_state.temp_file_path.clone();
         let mut md5_ctx = self.md5_ctx.clone();
@@ -984,8 +1077,18 @@ impl DavFile for QuarkDavFile {
     fn flush(&mut self) -> FsFuture<()> {
         debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush");
         async move {
+            if self.upload_state.flush_count >=1 {
+                // maybe zero byte file, try to upload again
+                // TODO :
+                // How to judge if a file is zero byte?
+                // now it is not working
+                self.upload_mini_byte_file().await?;
+                return Ok(());
+            }
+
             if !self.upload_state.is_uploading {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - no temp file path");
+                self.upload_state.flush_count = self.upload_state.flush_count + 1;
                 return Ok(());
             }
 
