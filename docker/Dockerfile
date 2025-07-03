@@ -1,7 +1,7 @@
 # 构建阶段：Alpine + Rust nightly
 FROM alpine:3.19 AS builder
 
-RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static pkgconf curl binutils \
+RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static pkgconf curl binutils perl \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain nightly
 
 ENV PATH="/root/.cargo/bin:${PATH}"
