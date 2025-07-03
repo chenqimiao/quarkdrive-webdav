@@ -397,9 +397,6 @@ impl DavFileSystem for QuarkDriveFileSystem {
                         error!(path = %path.display(), error = %err, "create folder failed");
                         FsError::GeneralFailure
                     })?;
-               // self.dir_cache.invalidate(parent_path).await;
-                // sleep 1s for quark server to update cache
-               // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 Ok(())
             } else {
                 Err(FsError::Forbidden)
