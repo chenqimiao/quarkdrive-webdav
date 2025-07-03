@@ -651,7 +651,12 @@ impl QuarkDavFile {
             return Ok(false);
         }
         if !self.upload_state.is_uploading {
-           self.upload_state.is_uploading = true;
+            self.upload_state.is_uploading = true;
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
         }
         if self.upload_state.chunk_count == 0 {
             let size = self.upload_state.size;
@@ -692,11 +697,6 @@ impl QuarkDavFile {
 
     }
     async fn consume_buf(&mut self) -> Result<(), FsError> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-        self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
         let temp_path = self.upload_state.temp_file_path.clone();
         let mut md5_ctx = self.md5_ctx.clone();
         let mut sha1_ctx = self.sha1_ctx.clone();
