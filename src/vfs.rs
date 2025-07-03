@@ -432,6 +432,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     error!(path = %path.display(), error = %err, "remove directory failed");
                     FsError::GeneralFailure
                 })?;
+            // sleep 1s for quark server to update cache
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             self.dir_cache.invalidate(&path).await;
             self.dir_cache.invalidate_parent(&path).await;
             Ok(())
