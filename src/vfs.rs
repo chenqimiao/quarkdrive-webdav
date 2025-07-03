@@ -379,12 +379,6 @@ impl DavFileSystem for QuarkDriveFileSystem {
             if self.read_only {
                 return Err(FsError::Forbidden);
             }
-
-            let files = self.dir_cache.get_or_insert(&path.to_string_lossy())
-                .await;
-            if files.is_some() {
-                return Ok(());
-            }
             let parent_path = path.parent().ok_or(FsError::NotFound)?;
             let parent_file = self
                 .get_file(parent_path.to_path_buf())
@@ -394,6 +388,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 return Err(FsError::Forbidden);
             }
             if let Some(name) = path.file_name() {
+                self.dir_cache.invalidate(parent_path).await;
                 let name = name.to_string_lossy().into_owned();
                 self.drive
                     .create_folder(&parent_file.fid, &name)
@@ -402,9 +397,9 @@ impl DavFileSystem for QuarkDriveFileSystem {
                         error!(path = %path.display(), error = %err, "create folder failed");
                         FsError::GeneralFailure
                     })?;
+               // self.dir_cache.invalidate(parent_path).await;
                 // sleep 1s for quark server to update cache
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                self.dir_cache.invalidate(parent_path).await;
+               // tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 Ok(())
             } else {
                 Err(FsError::Forbidden)

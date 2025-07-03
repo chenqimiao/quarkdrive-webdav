@@ -217,7 +217,7 @@ impl QuarkDrive {
 
 
                 let text = res.text().await?;
-                println!("{}: {}", url, text);
+                debug!("{}: {}", url, text);
                 // let res = serde_json::from_str(&res)?;
                 let res = serde_json::from_str::<U>(&text)
                     .map_err(|e| anyhow::anyhow!("Failed to parse JSON response: {}", e))?;

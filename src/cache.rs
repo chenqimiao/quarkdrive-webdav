@@ -47,7 +47,13 @@ impl Cache {
             }else {
                 let dsf_root_file = cached_files.iter().filter(|quark_file| {
                     quark_file.file_name == path.to_str().unwrap().split("/").last().unwrap()
-                }).last().cloned().unwrap();
+                }).last().cloned()
+                    .unwrap_or_else(|| {
+                        debug!(key = %key, "cache: no root file found for dfs");
+                        //QuarkFile::new_root()
+                        // throw exception 
+                        panic!("No root file found for DFS in cache for key: {}", key)
+                    });
                 self.dfs(dsf_root_file, key, path.to_str().unwrap()).await;
             }
 
