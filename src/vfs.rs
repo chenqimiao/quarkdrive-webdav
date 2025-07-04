@@ -1032,7 +1032,7 @@ impl QuarkDavFile {
         self.fs.remove_uploading_file(parent_path, &self.file.file_name);
         self.upload_state = UploadState::default();
         // sleep 1s for quark server to update cache
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
         Ok(())
     }
