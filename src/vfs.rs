@@ -1137,7 +1137,7 @@ impl DavFile for QuarkDavFile {
                 Some(url) => url,
                 None => {
                     // 详细记录文件信息
-                    println!(
+                    error!(
                         "文件缺少下载URL: {:?}\n文件元数据: {:#?}",
                         self.file.download_url,
                         self.file);

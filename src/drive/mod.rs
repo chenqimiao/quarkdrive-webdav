@@ -665,7 +665,7 @@ impl QuarkDrive {
         headers.insert("x-oss-user-agent", HeaderValue::from_str("aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")?);
         headers.insert("Referer", HeaderValue::from_str(REFERER)?);
 
-        println!("{:#?}", headers);
+        //println!("{:#?}", headers);
         let _res: EmptyResponse = self.post_request(commit_url, &xml_body, Some(headers)) .await?.context("expect response")?;
 
         Ok(())
