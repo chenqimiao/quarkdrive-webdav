@@ -663,7 +663,7 @@ impl QuarkDavFile {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis();
-            self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
+            self.upload_state.temp_file_path = format!("/tmp/{}_{}", timestamp, self.file.file_name);
         }
         if self.upload_state.chunk_count == 0 {
             let size = self.upload_state.size;
@@ -870,7 +870,9 @@ impl QuarkDavFile {
         // 写入临时文件
         self.upload_state.size = self.upload_state.size + bytes.len() as u64;
         if let Some(parent) = std::path::Path::new(&temp_path).parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
+            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                error!("create_dir_all failed: {}, path: {:?}", e, parent);
+            }
         }
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
