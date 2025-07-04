@@ -467,8 +467,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     error!(path = %path.display(), error = %err, "remove file failed");
                     FsError::GeneralFailure
                 })?;
-            // sleep 500ms for quark server to update cache
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // sleep 1s for quark server to update cache
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             self.dir_cache.invalidate_parent(&path).await;
             Ok(())
         }
@@ -508,8 +508,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                             error!(from = %from.display(), to = %to.display(), error = %err, "rename file failed");
                             FsError::GeneralFailure
                         })?;
-                    // sleep 500ms for quark server to update cache
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    // sleep 1s for quark server to update cache
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     self.dir_cache.invalidate_parent(&from).await;
                 } else {
                     return Err(FsError::Forbidden);
@@ -546,8 +546,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                         }
                     }
                 }
-                // sleep 500ms for quark server to update cache
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // sleep 1s for quark server to update cache
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 self.dir_cache.invalidate_parent(&from).await;
                 self.dir_cache.invalidate_parent(&to).await;
 
@@ -1031,8 +1031,8 @@ impl QuarkDavFile {
         let parent_path = self.file.parent_path.as_ref().unwrap().as_str();
         self.fs.remove_uploading_file(parent_path, &self.file.file_name);
         self.upload_state = UploadState::default();
-        // sleep 500ms for quark server to update cache
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // sleep 1s for quark server to update cache
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
         Ok(())
     }
