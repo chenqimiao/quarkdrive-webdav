@@ -871,30 +871,4 @@ mod tests {
         assert!(!res.is_empty());
         println!("{:#?}", res);
     }
-
-
-
-    #[tokio::test]
-    async fn test_resolve_cookie() {
-        let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
-        let cookie = Arc::new(DashMap::new());
-        for pair in cookie_str.split(';') {
-            if let Some((k, v)) = pair.trim().split_once('=') {
-                cookie.insert(k.trim().to_string(), v.trim().to_string());
-            }
-        }
-        let config = DriveConfig {
-            api_base_url: "https://drive.quark.cn".to_string(),
-            cookie: cookie,
-        };
-        let drive = QuarkDrive::new(config).unwrap();
-        let before = Utc::now();
-        println!("当前时间: {}", before);
-        let a = drive.resolve_cookies().await;
-        println!("<UNK>: {}", a);
-        // 打印当前时间，计算运行时差
-        let after = Utc::now();
-        let duration = after - before;
-        println!("耗时: {} 毫秒", duration.num_milliseconds());
-    }
 }
