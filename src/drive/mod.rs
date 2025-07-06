@@ -112,8 +112,8 @@ impl QuarkDrive {
 
         Ok(drive)
     }
-    
-    fn resolve_cookies(&self) -> String {
+
+    async fn resolve_cookies(&self) -> String {
         self.config.cookie.iter()
             .map(|entry| format!("{}={}", entry.key(), entry.value()))
             .collect::<Vec<_>>()
@@ -124,7 +124,7 @@ impl QuarkDrive {
     where
         U: DeserializeOwned,
     {
-        let cookie = self.resolve_cookies();
+        let cookie = self.resolve_cookies().await;
         let url = reqwest::Url::parse(&url)?;
         let res = if let Some(headers) = header {
             self.client
@@ -200,7 +200,7 @@ impl QuarkDrive {
         T: Serialize + ?Sized,
         U: DeserializeOwned,
     {
-        let cookie = self.resolve_cookies();
+        let cookie = self.resolve_cookies().await;
         let url = reqwest::Url::parse(&url)?;
         let res = if let Some(headers) = headers {
             let is_xml = headers
@@ -356,7 +356,7 @@ impl QuarkDrive {
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
         use reqwest::header::RANGE;
-        let cookie = self.resolve_cookies();
+        let cookie = self.resolve_cookies().await;
         let url = url.into_url()?;
         let res = if let Some((start_pos, size)) = range {
             let end_pos = start_pos + size as u64 - 1;
@@ -829,6 +829,7 @@ fn get_format_type(file_name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use super::*;
 
     #[tokio::test]
@@ -871,8 +872,10 @@ mod tests {
         println!("{:#?}", res);
     }
 
+
+
     #[tokio::test]
-    async fn test_download() {
+    async fn test_resolve_cookie() {
         let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
         let cookie = Arc::new(DashMap::new());
         for pair in cookie_str.split(';') {
@@ -885,9 +888,13 @@ mod tests {
             cookie: cookie,
         };
         let drive = QuarkDrive::new(config).unwrap();
-        let url = "";
-        let bytes = drive.download(url, None).await.unwrap();
-        assert!(!bytes.is_empty());
-        println!("Downloaded {} bytes", bytes.len());
+        let before = Utc::now();
+        println!("当前时间: {}", before);
+        let a = drive.resolve_cookies().await;
+        println!("<UNK>: {}", a);
+        // 打印当前时间，计算运行时差
+        let after = Utc::now();
+        let duration = after - before;
+        println!("耗时: {} 毫秒", duration.num_milliseconds());
     }
 }
