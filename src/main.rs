@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use anyhow::bail;
 use clap::{Parser, Subcommand};
+use dashmap::DashMap;
 use dav_server::{memls::MemLs, DavHandler};
 #[cfg(unix)]
 use futures_util::stream::StreamExt;
@@ -153,8 +154,13 @@ async fn main() -> anyhow::Result<()> {
         panic!("QUARK_COOKIE must be specified. Please set it in the environment or use --quark-cookie option.");
     });
    // let init_cookie = opt.quark_cookie.clone();
-    let init_cookie = Arc::new(Mutex::new(Some(init_cookie)));
-
+    let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
+    let init_cookie = Arc::new(DashMap::new());
+    for pair in cookie_str.split(';') {
+        if let Some((k, v)) = pair.trim().split_once('=') {
+            init_cookie.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
     let drive_config = DriveConfig {
         api_base_url: "https://drive.quark.cn".to_string(),
         cookie: init_cookie,

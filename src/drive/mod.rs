@@ -24,6 +24,8 @@ use dav_server::fs::{DavDirEntry, DavMetaData, FsFuture, FsResult};
 
 
 use bytes::Bytes;
+use dashmap::DashMap;
+use headers::Cookie;
 use moka::future::FutureExt;
 
 pub mod model;
@@ -38,7 +40,7 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 #[derive(Debug, Clone)]
 pub struct DriveConfig {
     pub api_base_url: String,
-    pub cookie: Arc<Mutex<Option<String>>>,
+    pub cookie: Arc<DashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,13 +112,19 @@ impl QuarkDrive {
 
         Ok(drive)
     }
+    
+    fn resolve_cookies(&self) -> String {
+        self.config.cookie.iter()
+            .map(|entry| format!("{}={}", entry.key(), entry.value()))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
 
     async fn get_request<U>(&self, url: String, header: Option<HeaderMap>) -> Result<Option<U>>
     where
         U: DeserializeOwned,
     {
-
-        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
+        let cookie = self.resolve_cookies();
         let url = reqwest::Url::parse(&url)?;
         let res = if let Some(headers) = header {
             self.client
@@ -181,27 +189,18 @@ impl QuarkDrive {
     async fn update_cookie_from_response(&self, res: &reqwest::Response) {
         if let Some(set_cookie) = res.headers().get_all("set-cookie").iter().find_map(|v| v.to_str().ok()) {
             if let Some(puus) = set_cookie.split(';').find(|s| s.trim().starts_with("__puus=")) {
-                let new_puus = puus.trim();
-                let mut cookie_guard = self.config.cookie.lock().unwrap();
-                let old_cookie = cookie_guard.clone().unwrap_or_default();
-                // 拆分原有cookie
-                let mut parts: Vec<String> = old_cookie
-                    .split(';')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.starts_with("__puus="))
-                    .collect();
-                // 替换/添加新的__puus
-                parts.push(new_puus.to_string());
-                *cookie_guard = Some(parts.join("; "));
+                let new_puus = puus.trim().to_string().replace("__puus=", "");
+                self.config.cookie.insert("__puus".to_string(), new_puus);
             }
         }
     }
+    
     async fn post_request<T, U>(&self, url: String, r: &T, headers: Option<HeaderMap> ) -> Result<Option<U>>
     where
         T: Serialize + ?Sized,
         U: DeserializeOwned,
     {
-        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
+        let cookie = self.resolve_cookies();
         let url = reqwest::Url::parse(&url)?;
         let res = if let Some(headers) = headers {
             let is_xml = headers
@@ -357,7 +356,7 @@ impl QuarkDrive {
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
         use reqwest::header::RANGE;
-        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
+        let cookie = self.resolve_cookies();
         let url = url.into_url()?;
         let res = if let Some((start_pos, size)) = range {
             let end_pos = start_pos + size as u64 - 1;
@@ -834,7 +833,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_files_by_pdir_fid() {
-        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
+        let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
+        let cookie = Arc::new(DashMap::new());
+        for pair in cookie_str.split(';') {
+            if let Some((k, v)) = pair.trim().split_once('=') {
+                cookie.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
             cookie: cookie,
@@ -848,8 +853,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_download_urls() {
-        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
-
+        let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
+        let cookie = Arc::new(DashMap::new());
+        for pair in cookie_str.split(';') {
+            if let Some((k, v)) = pair.trim().split_once('=') {
+                cookie.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
             cookie: cookie,
@@ -863,8 +873,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_download() {
-        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
-
+        let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
+        let cookie = Arc::new(DashMap::new());
+        for pair in cookie_str.split(';') {
+            if let Some((k, v)) = pair.trim().split_once('=') {
+                cookie.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
             cookie: cookie,
