@@ -1170,7 +1170,7 @@ impl DavFile for QuarkDavFile {
 
             if !self.upload_state.is_uploading {
                 debug!(file_id = %self.file.fid, file_name = %self.file.file_name, "file: flush - no temp file path");
-                self.upload_state.flush_count = self.upload_state.flush_count + 1;
+                //self.upload_state.flush_count = self.upload_state.flush_count + 1;
                 return Ok(());
             }
 
