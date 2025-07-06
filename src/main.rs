@@ -1,6 +1,6 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::time::Duration;
 use anyhow::bail;
 use clap::{Parser, Subcommand};
@@ -150,11 +150,9 @@ async fn main() -> anyhow::Result<()> {
         .with_timer(tracing_subscriber::fmt::time::time())
         .init();
 
-    let init_cookie = opt.quark_cookie.unwrap_or_else(||{ 
+    let cookie_str = opt.quark_cookie.unwrap_or_else(||{
         panic!("QUARK_COOKIE must be specified. Please set it in the environment or use --quark-cookie option.");
     });
-   // let init_cookie = opt.quark_cookie.clone();
-    let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
     let init_cookie = Arc::new(DashMap::new());
     for pair in cookie_str.split(';') {
         if let Some((k, v)) = pair.trim().split_once('=') {
