@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use model::*;
 
@@ -37,7 +38,7 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 #[derive(Debug, Clone)]
 pub struct DriveConfig {
     pub api_base_url: String,
-    pub cookie: Option<String>,
+    pub cookie: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,8 +82,6 @@ impl QuarkDrive {
         let mut headers = HeaderMap::new();
         headers.insert("Origin", HeaderValue::from_static(ORIGIN));
         headers.insert("Referer", HeaderValue::from_static(REFERER));
-        let cookie = config.cookie.as_ref().expect("Please set QUARK_COOKIE in config!");
-        headers.insert("Cookie", HeaderValue::from_str(cookie)?);
         let retry_policy = ExponentialBackoff::builder()
             .retry_bounds(Duration::from_secs(3), Duration::from_secs(7))
             .jitter(Jitter::Bounded)
@@ -112,21 +111,33 @@ impl QuarkDrive {
         Ok(drive)
     }
 
-    async fn get_request<U>(&self, url: String) -> Result<Option<U>>
+    async fn get_request<U>(&self, url: String, header: Option<HeaderMap>) -> Result<Option<U>>
     where
         U: DeserializeOwned,
     {
+
+        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
         let url = reqwest::Url::parse(&url)?;
-        let res = self
-            .client
-            .get(url.clone())
-            .send()
-            .await?;
+        let res = if let Some(headers) = header {
+            self.client
+                .get(url.clone())
+                .headers(headers)
+                .header("Cookie", cookie)
+                .send()
+                .await?
+        } else {
+            self.client
+                .get(url.clone())
+                .header("Cookie", cookie)
+                .send()
+                .await?
+        };
         match res.error_for_status_ref() {
             Ok(_) => {
                 if res.status() == StatusCode::NO_CONTENT {
                     return Ok(None);
                 }
+                self.update_cookie_from_response(&res).await;
                 // let res = res.text().await?;
                 // println!("{}: {}", url, res);
                 // let res = serde_json::from_str(&res)?;
@@ -167,13 +178,30 @@ impl QuarkDrive {
             }
         }
     }
-
-
+    async fn update_cookie_from_response(&self, res: &reqwest::Response) {
+        if let Some(set_cookie) = res.headers().get_all("set-cookie").iter().find_map(|v| v.to_str().ok()) {
+            if let Some(puus) = set_cookie.split(';').find(|s| s.trim().starts_with("__puus=")) {
+                let new_puus = puus.trim();
+                let mut cookie_guard = self.config.cookie.lock().unwrap();
+                let old_cookie = cookie_guard.clone().unwrap_or_default();
+                // 拆分原有cookie
+                let mut parts: Vec<String> = old_cookie
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.starts_with("__puus="))
+                    .collect();
+                // 替换/添加新的__puus
+                parts.push(new_puus.to_string());
+                *cookie_guard = Some(parts.join("; "));
+            }
+        }
+    }
     async fn post_request<T, U>(&self, url: String, r: &T, headers: Option<HeaderMap> ) -> Result<Option<U>>
     where
         T: Serialize + ?Sized,
         U: DeserializeOwned,
     {
+        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
         let url = reqwest::Url::parse(&url)?;
         let res = if let Some(headers) = headers {
             let is_xml = headers
@@ -189,6 +217,7 @@ impl QuarkDrive {
                     .post(url.clone())
                     .body(body)
                     .headers(headers)
+                    .header("Cookie", cookie)
                     .send()
                     .await?
             }else {
@@ -196,6 +225,7 @@ impl QuarkDrive {
                     .post(url.clone())
                     .json(r)
                     .headers(headers)
+                    .header("Cookie", cookie)
                     .send()
                     .await?
             }
@@ -205,9 +235,11 @@ impl QuarkDrive {
                 .post(url.clone())
                 .json(r)
                 .header("Content-Type", "application/json")
+                .header("Cookie", cookie)
                 .send()
                 .await?
         };
+
 
 
         match res.error_for_status_ref() {
@@ -216,6 +248,7 @@ impl QuarkDrive {
                     return Ok(None);
                 }
 
+                self.update_cookie_from_response(&res).await;
 
                 let text = res.text().await?;
                 debug!("{}: {}", url, text);
@@ -273,7 +306,8 @@ impl QuarkDrive {
                         , self.config.api_base_url
                         , pdir_fid
                         , page
-                        , size)
+                        , size),
+                None
             )
             .await
             .and_then(|res| res.context("unexpect response"));
@@ -323,7 +357,7 @@ impl QuarkDrive {
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
         use reqwest::header::RANGE;
-
+        let cookie = self.config.cookie.lock().unwrap().clone().unwrap_or_default();
         let url = url.into_url()?;
         let res = if let Some((start_pos, size)) = range {
             let end_pos = start_pos + size as u64 - 1;
@@ -332,6 +366,7 @@ impl QuarkDrive {
             self.client
                 .get(url)
                 .header(RANGE, range)
+                .header("Cookie", cookie)
                 .send()
                 .await?
                 .error_for_status()?
@@ -339,6 +374,7 @@ impl QuarkDrive {
             debug!(url = %url, "download file");
             self.client.get(url).send().await?.error_for_status()?
         };
+        self.update_cookie_from_response(&res).await;
         Ok(res.bytes().await?)
     }
 
@@ -446,7 +482,7 @@ impl QuarkDrive {
         let res: GetSpaceInfoResponse = self
             .get_request(
                 format!("{}/1/clouddrive/member?pr=ucpro&fr=pc&uc_param_str=&fetch_subscribe=true&_ch=home&fetch_identity=true", self.config.api_base_url),
-            )
+                None)
             .await?
             .context("expect response")?;
 
@@ -798,9 +834,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_files_by_pdir_fid() {
+        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
-            cookie: Some(std::env::var("QUARK_COOKIE").unwrap()),
+            cookie: cookie,
         };
         let drive = QuarkDrive::new(config).unwrap();
         let (files, _total) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
@@ -811,9 +848,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_download_urls() {
+        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
+
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
-            cookie: Some(std::env::var("QUARK_COOKIE").unwrap()),
+            cookie: cookie,
         };
         let drive = QuarkDrive::new(config).unwrap();
         let fids = vec!["your fid".to_string()];
@@ -824,9 +863,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_download() {
+        let cookie = Arc::new(Mutex::new(Some(std::env::var("QUARK_COOKIE").unwrap())));
+
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
-            cookie: Some(std::env::var("QUARK_COOKIE").unwrap()),
+            cookie: cookie,
         };
         let drive = QuarkDrive::new(config).unwrap();
         let url = "";

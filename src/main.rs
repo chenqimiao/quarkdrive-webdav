@@ -1,6 +1,6 @@
 use std::env;
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use anyhow::bail;
 use clap::{Parser, Subcommand};
@@ -149,9 +149,15 @@ async fn main() -> anyhow::Result<()> {
         .with_timer(tracing_subscriber::fmt::time::time())
         .init();
 
+    let init_cookie = opt.quark_cookie.unwrap_or_else(||{ 
+        panic!("QUARK_COOKIE must be specified. Please set it in the environment or use --quark-cookie option.");
+    });
+   // let init_cookie = opt.quark_cookie.clone();
+    let init_cookie = Arc::new(Mutex::new(Some(init_cookie)));
+
     let drive_config = DriveConfig {
         api_base_url: "https://drive.quark.cn".to_string(),
-        cookie: opt.quark_cookie.clone(),
+        cookie: init_cookie,
     };
     let auth_user = opt.auth_user;
     let auth_password = opt.auth_password;
