@@ -34,7 +34,7 @@ impl Cache {
             while let Some(parent) = path.parent() {
                 if let Some(c_files) = self.get(parent.to_str().unwrap()).await {
                     let found = c_files.iter().find(|quark_file| {
-                        quark_file.file_name == path.to_str().unwrap().split('/').last().unwrap()
+                        quark_file.file_name == path.file_name()?.to_str()
                     }).cloned();
                     if found.is_none() {
                         debug!(key = %key, "cache: no file found for path: {}", path.to_str().unwrap());
