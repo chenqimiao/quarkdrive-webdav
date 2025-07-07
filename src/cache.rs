@@ -10,9 +10,6 @@ pub struct Cache {
     inner: MokaCache<String, Vec<QuarkFile>>,
     drive: QuarkDrive,
 }
-use tokio::time;
-
-
 const ONE_PAGE: u32 = 500;
 
 impl Cache {
