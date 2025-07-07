@@ -10,6 +10,8 @@ pub struct Cache {
     inner: MokaCache<String, Vec<QuarkFile>>,
     drive: QuarkDrive,
 }
+use tokio::time;
+
 
 const ONE_PAGE: u32 = 500;
 
@@ -31,10 +33,17 @@ impl Cache {
             self.dfs(QuarkFile::new_root(), key, "/").await;
         }else {
             let mut path = Path::new(key);
-            let mut cached_files:Vec<QuarkFile> = Vec::new();
+            let mut dsf_root_file = None;
             while let Some(parent) = path.parent() {
                 if let Some(c_files) = self.get(parent.to_str().unwrap()).await {
-                    cached_files = c_files;
+                    let found = c_files.iter().find(|quark_file| {
+                        quark_file.file_name == path.to_str().unwrap().split('/').last().unwrap()
+                    }).cloned();
+                    if found.is_none() {
+                        debug!(key = %key, "cache: no file found for path: {}", path.to_str().unwrap());
+                        continue;
+                    }
+                    dsf_root_file = found;
                     break;
                 }
                 path = parent;
@@ -45,16 +54,16 @@ impl Cache {
             if path.to_str() == Some("/") {
                 self.dfs(QuarkFile::new_root(), key, "/").await;
             }else {
-                let dsf_root_file = cached_files.iter().filter(|quark_file| {
-                    quark_file.file_name == path.to_str().unwrap().split("/").last().unwrap()
-                }).last().cloned()
-                    .unwrap_or_else(|| {
-                        debug!(key = %key, "cache: no root file found for dfs");
-                        //QuarkFile::new_root()
-                        // throw exception 
-                        panic!("No root file found for DFS in cache for key: {}", key)
-                    });
-                self.dfs(dsf_root_file, key, path.to_str().unwrap()).await;
+                match dsf_root_file { 
+                    Some(dsf_root_fil) => {
+                        debug!(key = %key, "cache: found root file: {}", dsf_root_fil.file_name);
+                        self.dfs(dsf_root_fil, key, path.to_str().unwrap()).await;
+                    },
+                    None => {
+                        debug!(key = %key, "cache: no root file found for path: {}", path.to_str().unwrap());
+                        return None;
+                    }
+                }
             }
 
         }
@@ -138,4 +147,5 @@ impl Cache {
         debug!("cache: invalidate all");
         self.inner.invalidate_all();
     }
+
 }
