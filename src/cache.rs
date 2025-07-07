@@ -33,8 +33,9 @@ impl Cache {
             let mut dsf_root_file = None;
             while let Some(parent) = path.parent() {
                 if let Some(c_files) = self.get(parent.to_str().unwrap()).await {
+                    let file_name = path.file_name().and_then(|os_str| os_str.to_str());
                     let found = c_files.iter().find(|quark_file| {
-                        quark_file.file_name == path.file_name()?.to_str()
+                        Some(quark_file.file_name.as_str()) == file_name
                     }).cloned();
                     if found.is_none() {
                         debug!(key = %key, "cache: no file found for path: {}", path.to_str().unwrap());
@@ -44,7 +45,7 @@ impl Cache {
                     dsf_root_file = found;
                     break;
                 }
-                
+
                 path = parent;
 
                 if path.to_str() == Some("/") {
