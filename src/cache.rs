@@ -41,12 +41,12 @@ impl Cache {
                     }).cloned();
                     if found.is_none() {
                         debug!(key = %key, "cache: no file found for path: {}", path.to_str().unwrap());
+                        path = parent;
                         continue;
                     }
                     dsf_root_file = found;
                     break;
                 }
-                path = parent;
                 if path.to_str() == Some("/") {
                     break;
                 }
