@@ -44,9 +44,13 @@ impl Cache {
                     dsf_root_file = found;
                     break;
                 }
+                
+                path = parent;
+
                 if path.to_str() == Some("/") {
                     break;
                 }
+
             }
             if path.to_str() == Some("/") {
                 self.dfs(QuarkFile::new_root(), key, "/").await;
