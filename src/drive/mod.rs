@@ -85,10 +85,10 @@ impl QuarkDrive {
         headers.insert("Origin", HeaderValue::from_static(ORIGIN));
         headers.insert("Referer", HeaderValue::from_static(REFERER));
         let retry_policy = ExponentialBackoff::builder()
-            .retry_bounds(Duration::from_secs(3), Duration::from_secs(7))
+            .retry_bounds(Duration::from_millis(100), Duration::from_secs(5))
             .jitter(Jitter::Bounded)
             .base(2)
-            .build_with_max_retries(3);
+            .build_with_max_retries(5);
 
         let client = reqwest::Client::builder()
             .user_agent(UA)
@@ -98,7 +98,7 @@ impl QuarkDrive {
             // See also https://github.com/hyperium/hyper/issues/2136
             .pool_idle_timeout(Duration::from_secs(50))
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(49))
             .build()?;
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
