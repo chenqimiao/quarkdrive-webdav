@@ -47,6 +47,7 @@ pub struct DriveConfig {
 pub struct QuarkDrive {
     config: DriveConfig,
     client: ClientWithMiddleware,
+    download_client: ClientWithMiddleware,
 }
 
 impl DavMetaData for QuarkFile {
@@ -92,7 +93,7 @@ impl QuarkDrive {
 
         let client = reqwest::Client::builder()
             .user_agent(UA)
-            .default_headers(headers)
+            .default_headers(headers.clone())
             // OSS closes idle connections after 60 seconds,
             // so we can close idle connections ahead of time to prevent re-using them.
             // See also https://github.com/hyperium/hyper/issues/2136
@@ -103,10 +104,24 @@ impl QuarkDrive {
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
+        
+        // the download server closes idle connections after 0 seconds
+        let download_client = reqwest::Client::builder()
+            .user_agent(UA)
+            .default_headers(headers)
+            // OSS closes idle connections after 0 seconds,
+            .pool_idle_timeout(Duration::from_secs(0))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()?;
+        let download_client = ClientBuilder::new(download_client)
+            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
+            .build();
 
         let drive = Self {
             config,
             client,
+            download_client,
         };
 
 
@@ -362,7 +377,7 @@ impl QuarkDrive {
             let end_pos = start_pos + size as u64 - 1;
             debug!(url = %url, start = start_pos, end = end_pos, "download file");
             let range = format!("bytes={}-{}", start_pos, end_pos);
-            self.client
+            self.download_client
                 .get(url)
                 .header(RANGE, range)
                 .header("Cookie", cookie)
@@ -371,7 +386,7 @@ impl QuarkDrive {
                 .error_for_status()?
         } else {
             debug!(url = %url, "download file");
-            self.client.get(url).send().await?.error_for_status()?
+            self.download_client.get(url).send().await?.error_for_status()?
         };
         self.update_cookie_from_response(&res).await;
         Ok(res.bytes().await?)
