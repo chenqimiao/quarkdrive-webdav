@@ -99,6 +99,7 @@ impl QuarkDrive {
             // See also https://github.com/hyperium/hyper/issues/2136
             .pool_idle_timeout(Duration::from_secs(50))
             .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(3)
             .timeout(Duration::from_secs(49))
             .build()?;
         let client = ClientBuilder::new(client)
@@ -111,6 +112,7 @@ impl QuarkDrive {
             .default_headers(headers)
             // OSS closes idle connections after 0 seconds,
             .pool_idle_timeout(Duration::from_secs(0))
+            .pool_max_idle_per_host(0) // 关键：禁止连接池保留连接
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .build()?;
