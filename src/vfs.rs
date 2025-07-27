@@ -941,7 +941,8 @@ impl QuarkDavFile {
 
             let bytes_to_read = if chunk_idx == chunk_count {
                 // 最后一块可能小于 chunk_size
-                (self.upload_state.size % self.upload_state.chunk_size) as usize
+                let remaining_bytes = self.upload_state.size as usize - ((chunk_idx - 1) as usize * chunk_size);
+                std::cmp::min(remaining_bytes, chunk_size)
             } else {
                 chunk_size
             };
