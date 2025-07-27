@@ -946,13 +946,10 @@ impl QuarkDavFile {
                 chunk_size
             };
             let mut buf = vec![0u8; bytes_to_read]; // 创建指定大小的缓冲区
-            let bytes_read = file.read_exact(&mut buf).await.map_err(|e| {
+            file.read_exact(&mut buf).await.map_err(|e| {
                 error!(file_name = %self.file.file_name, error = %e, "read temp file failed");
                 FsError::GeneralFailure
             })?;
-            if bytes_read == 0 {
-                break; // EOF
-            }
             let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
             // RFC1123 格式
             let utc_time = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
