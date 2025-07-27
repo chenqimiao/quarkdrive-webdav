@@ -252,7 +252,10 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     file,
                     parent_file.fid,
                     parent_path.to_path_buf(),
-                    size.unwrap_or(0),
+                   // size.unwrap_or(0),
+                    // The client will not provide the size of large files,
+                    // So the size is calculated uniformly by the post program
+                    0u64,
                     sha1,
                 )
             } else {
@@ -922,7 +925,6 @@ impl QuarkDavFile {
             FsError::GeneralFailure
         })?;
         let mut file = tokio::io::BufReader::new(file);
-        let mut buffer = BytesMut::with_capacity(chunk_size);
         let chunk_count = self.upload_state.chunk_count;
         // 定义一个字符串数组，size = chunk_count
         let mut etags = vec![String::new(); chunk_count as usize];
@@ -936,18 +938,19 @@ impl QuarkDavFile {
         let upload_url = &self.upload_state.upload_url;
 
         for chunk_idx in 1..= chunk_count {
-            buffer.clear();
-            let bytes_read = file.read_buf(&mut buffer).await.map_err(|err| {
-                error!(file_name = %self.file.file_name, error = %err, "read temp file failed");
+
+            let bytes_to_read = if chunk_idx == chunk_count {
+                // 最后一块可能小于 chunk_size
+                let remaining_bytes = self.upload_state.size as usize - ((chunk_idx - 1) as usize * chunk_size);
+                std::cmp::min(remaining_bytes, chunk_size)
+            } else {
+                chunk_size
+            };
+            let mut buf = vec![0u8; bytes_to_read]; // 创建指定大小的缓冲区
+            file.read_exact(&mut buf).await.map_err(|e| {
+                error!(file_name = %self.file.file_name, error = %e, "read temp file failed");
                 FsError::GeneralFailure
             })?;
-            if bytes_read == 0 {
-                break; // EOF
-            }
-            if buffer.len() > chunk_size {
-                buffer.truncate(chunk_size);
-            }
-
             let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
             // RFC1123 格式
             let utc_time = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
@@ -974,7 +977,7 @@ impl QuarkDavFile {
                 obj_key: obj_key.clone(),
                 part_number: chunk_idx as u32,
                 upload_id: upload_id.to_string(),
-                part_bytes: buffer.to_vec(),
+                part_bytes: buf,
             };
 
             let res = self.fs.drive.up_part(up_req).await.map_err(|err| {
