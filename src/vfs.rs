@@ -252,7 +252,10 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     file,
                     parent_file.fid,
                     parent_path.to_path_buf(),
-                    size.unwrap_or(0),
+                   // size.unwrap_or(0),
+                    // The client will not provide the size of large files,
+                    // So the size is calculated uniformly by the post program
+                    0u64,
                     sha1,
                 )
             } else {
