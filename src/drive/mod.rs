@@ -525,7 +525,7 @@ impl QuarkDrive {
             l_updated_at: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)?.as_millis() as u64,
             // 上传文件夹？待确认
             dir_name: "".to_string(),
-            parallel_upload:true,
+            parallel_upload:false,
         };
 
         let res: UpPreResponse = self
