@@ -22,7 +22,7 @@ WORKDIR /app
 COPY --from=builder /app/target/release/quarkdrive-webdav /usr/local/bin/quarkdrive-webdav
 
 # 添加定时清理任务
-RUN echo "0 3 * * * root find /tmp -type f -amin +15 -delete" > /etc/crontabs/root
+RUN echo "0 3 * * * root find /tmp -type f -amin +15 -mmin +15 -cmin +15 -delete" > /etc/crontabs/root
 
 # 用 root 用户启动 cron 和主程序
 USER root
