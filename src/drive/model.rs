@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use html_escape::decode_html_entities;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Clone, Deserialize)]
@@ -318,8 +319,14 @@ pub struct UpHashResponseData {
 
 impl From<GetFilesResponse> for QuarkFiles {
     fn from(response: GetFilesResponse) -> Self {
+        // 对每个文件的文件名进行HTML解码
+        let decoded_list: Vec<QuarkFile> = response.data.list.into_iter().map(|mut file| {
+            file.file_name = decode_html_entities(&file.file_name).to_string();
+            file
+        }).collect();
+        
         QuarkFiles {
-            list: response.data.list,
+            list: decoded_list,
             total: response.metadata.total,
         }
     }
