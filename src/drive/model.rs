@@ -319,9 +319,11 @@ pub struct UpHashResponseData {
 
 impl From<GetFilesResponse> for QuarkFiles {
     fn from(response: GetFilesResponse) -> Self {
-        // 对每个文件的文件名进行HTML解码
+        // 只对包含 &# 开头的HTML编码的文件名进行解码
         let decoded_list: Vec<QuarkFile> = response.data.list.into_iter().map(|mut file| {
-            file.file_name = decode_html_entities(&file.file_name).to_string();
+            if file.file_name.contains("&#") {
+                file.file_name = decode_html_entities(&file.file_name).to_string();
+            }
             file
         }).collect();
         
