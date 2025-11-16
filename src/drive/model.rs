@@ -1,10 +1,20 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
+
+/// Custom deserializer for file_name that HTML-unescapes the value
+fn deserialize_file_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(htmlescape::decode_html(&s).unwrap_or(s))
+}
 
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct QuarkFile {
     pub fid: String,
+    #[serde(deserialize_with = "deserialize_file_name")]
     pub file_name: String,
     pub pdir_fid: String,
     #[serde(default)]
@@ -51,6 +61,7 @@ pub struct GetFilesDownloadUrlsRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetFileItem {
     pub fid: String,
+    #[serde(deserialize_with = "deserialize_file_name")]
     pub file_name: String,
     pub pdir_fid: String,
     pub category: u8,
