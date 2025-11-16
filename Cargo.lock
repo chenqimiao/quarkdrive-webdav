@@ -1445,6 +1445,7 @@ dependencies = [
  "dav-server",
  "futures-util",
  "headers",
+ "htmlescape",
  "hyper",
  "hyper-util",
  "md5",
