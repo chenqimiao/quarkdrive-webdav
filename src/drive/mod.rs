@@ -94,27 +94,26 @@ impl QuarkDrive {
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers.clone())
-            // OSS closes idle connections after 60 seconds,
-            // so we can close idle connections ahead of time to prevent re-using them.
-            // See also https://github.com/hyperium/hyper/issues/2136
+            // Keep connections alive for better performance
+            // OSS typically keeps connections open for 60+ seconds
             .pool_idle_timeout(Duration::from_secs(50))
             .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(10)
-            .timeout(Duration::from_secs(49))
+            .pool_max_idle_per_host(32) // Increase for concurrent operations
+            .timeout(Duration::from_secs(300)) // Longer timeout for large file operations
             .build()?;
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
         
-        // the download server closes idle connections after 0 seconds
+        // Configure download client with connection pooling for better performance
         let download_client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers)
-            // OSS closes idle connections after 0 seconds,
-            .pool_idle_timeout(Duration::from_secs(0))
-            .pool_max_idle_per_host(0) // 关键：禁止连接池保留连接
+            // Enable connection pooling to avoid TCP handshake overhead on each request
+            .pool_idle_timeout(Duration::from_secs(50))
+            .pool_max_idle_per_host(32) // Increase pool size for concurrent downloads
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(300)) // Increase timeout for large files
             .build()?;
         let download_client = ClientBuilder::new(download_client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
