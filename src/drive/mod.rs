@@ -96,7 +96,7 @@ impl QuarkDrive {
             .default_headers(headers.clone())
             // Keep connections alive for better performance
             // OSS typically keeps connections open for 60+ seconds
-            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_idle_timeout(Duration::from_secs(50))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(32) // Increase for concurrent operations
             .timeout(Duration::from_secs(300)) // Longer timeout for large file operations
@@ -110,7 +110,7 @@ impl QuarkDrive {
             .user_agent(UA)
             .default_headers(headers)
             // Enable connection pooling to avoid TCP handshake overhead on each request
-            .pool_idle_timeout(Duration::from_secs(90))
+            .pool_idle_timeout(Duration::from_secs(50))
             .pool_max_idle_per_host(32) // Increase pool size for concurrent downloads
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300)) // Increase timeout for large files
