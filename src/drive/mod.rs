@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::collections::HashMap;
 use std::sync::{Arc};
 use std::time::{Duration, SystemTime};
@@ -91,6 +92,9 @@ impl QuarkDrive {
             .base(2)
             .build_with_max_retries(5);
 
+        let cpu = num_cpus::get();
+        let pool_size: usize = min(cpu.saturating_mul(2), 16).max(3);
+
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers.clone())
@@ -98,7 +102,7 @@ impl QuarkDrive {
             // OSS typically keeps connections open for 60+ seconds
             .pool_idle_timeout(Duration::from_secs(50))
             .connect_timeout(Duration::from_secs(10))
-            .pool_max_idle_per_host(32) // Increase for concurrent operations
+            .pool_max_idle_per_host(pool_size) // Increase for concurrent operations
             .timeout(Duration::from_secs(300)) // Longer timeout for large file operations
             .build()?;
         let client = ClientBuilder::new(client)
@@ -111,7 +115,7 @@ impl QuarkDrive {
             .default_headers(headers)
             // Enable connection pooling to avoid TCP handshake overhead on each request
             .pool_idle_timeout(Duration::from_secs(50))
-            .pool_max_idle_per_host(32) // Increase pool size for concurrent downloads
+            .pool_max_idle_per_host(pool_size) // Increase pool size for concurrent downloads
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300)) // Increase timeout for large files
             .build()?;
