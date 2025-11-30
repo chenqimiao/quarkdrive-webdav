@@ -92,8 +92,8 @@ impl QuarkDrive {
             .base(2)
             .build_with_max_retries(5);
 
-        let cpu = num_cpus::get();
-        let pool_size: usize = min(cpu.saturating_mul(2), 16).max(3);
+        let cpu_count = num_cpus::get();
+        let pool_size: usize = min(cpu_count.saturating_mul(2), 16).max(3);
 
         let client = reqwest::Client::builder()
             .user_agent(UA)
