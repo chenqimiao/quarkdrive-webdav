@@ -40,7 +40,7 @@ quarkdrive-webdav --quark-cookie '你的cookie' -U '用户名' -W '密码' -p 80
 ### docker run
 ```bash
 docker run -d --name=quarkdrive-webdav --restart=unless-stopped -p 8080:8080 \
-  -e QUARK_COOKIE='you quark cookie' \
+  -e QUARK_COOKIE='your quark cookie' \
   -e WEBDAV_AUTH_USER=admin \
   -e WEBDAV_AUTH_PASSWORD=admin \
   ghcr.io/chenqimiao/quarkdrive-webdav:latest
@@ -58,7 +58,7 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - QUARK_COOKIE=you quark cookie
+      - QUARK_COOKIE=your quark cookie
       - WEBDAV_AUTH_USER=admin
       - WEBDAV_AUTH_PASSWORD=admin
 ```
