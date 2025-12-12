@@ -9,8 +9,8 @@
 - 🐳 Docker 容器化部署 - 快速启动，零环境依赖，无需繁琐配置即可完成部署
 - 📦 二进制包 + 命令行启动 - 支持直接下载二进制包，通过命令行快速启动，部署方式灵活多样
 - 🌱 极致轻量级运行 - 仅需约 10MB 内存占用，低资源消耗特性使其可流畅运行在低配置环境中
-- 🔄 NAS 与云盘双向同步 - 支持 NAS 与云盘间文件基于Webdav协议的备份、下载、上传操作
-- 🎬 云盘影音无缝播放 - 完美适配  [Infuse](https://firecore.com/infuse)、[nPlayer](https://nplayer.com) 等支持 WebDAV 协议的客户端 App直接播放网盘视频
+- 🔄 NAS 与云盘双向同步 - 支持 NAS 与云盘间文件基于WebDAV协议的备份、下载、上传操作
+- 🎬 云盘影音无缝播放 - 完美适配  [Infuse](https://firecore.com/infuse)、[nPlayer](https://nplayer.com) 等支持 WebDAV 协议的客户端 App直接播放云盘内容
 
 
 
