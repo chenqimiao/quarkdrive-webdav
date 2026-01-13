@@ -185,7 +185,6 @@ async fn main() -> anyhow::Result<()> {
         .set_prefer_http_download(opt.prefer_http_download);
     let cache = Arc::new(fs.dir_cache.clone());
     start_periodic_invalidate(cache.clone(), opt.refresh_cache_secs_interval);
-    #[cfg(unix)]
     let mut dav_server_builder = DavHandler::builder()
         .filesystem(Box::new(fs))
         .locksystem(MemLs::new())
