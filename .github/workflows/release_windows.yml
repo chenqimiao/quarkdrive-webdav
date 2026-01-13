@@ -1,0 +1,50 @@
+name: Build Windows binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_body:
+        description: 'Release 描述（可选）'
+        required: false
+        default: ''
+
+jobs:
+  build-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    strategy:
+      matrix: 
+        include: 
+          - target: x86_64-pc-windows-msvc
+          - target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout code
+        uses:  actions/checkout@v4
+        with: 
+          ref: ${{ github.ref_name }}
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix. target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix. target }}/release/quarkdrive-webdav. exe" -Destination dist/
+          Compress-Archive -Path dist/* -DestinationPath "quarkdrive-webdav-${{ matrix.target }}. zip"
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with: 
+          files: |
+            quarkdrive-webdav-${{ matrix. target }}.zip
+          body: ${{ github. event.inputs.release_body }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
