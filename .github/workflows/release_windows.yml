@@ -3,6 +3,10 @@ name: Build Windows binary
 on:
   workflow_dispatch:
     inputs:
+      tag_name:
+        description: 'Tag 名称 (例如 v1.3.4)'
+        required: true
+        default: 'v1.3.4'
       release_body:
         description: 'Release 描述（可选）'
         required: false
@@ -43,6 +47,7 @@ jobs:
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with: 
+          tag_name: ${{ github.event.inputs.tag_name }}
           files: |
             quarkdrive-webdav-${{ matrix.target }}.zip
           body: ${{ github.event.inputs.release_body }}
