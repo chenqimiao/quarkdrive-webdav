@@ -63,7 +63,7 @@ num_cpus = "1.17.0"
 
 # Unix signal support
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3.14"
+signal-hook = {version = "0.3.18", features = ["default"]}
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 
 [profile.release]
