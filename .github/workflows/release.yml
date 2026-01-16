@@ -26,8 +26,10 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-    #          - os: windows-latest
-    #            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
 
     steps:
       - name: Checkout code
@@ -39,12 +41,14 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: ${{ matrix.target }}
 
       - name: Install OpenSSL (x86_64-unknown-linux-gnu)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
 
       - name: Install cross
+        if: matrix.os != 'windows-latest'
         run: cargo install cross
 
       - name: Add macOS target
@@ -52,6 +56,7 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build (cross for Linux, cargo for others)
+        if: matrix.os != 'windows-latest'
         run: |
           if [[ "${{ matrix.target }}" == *"linux-gnu"* ]]; then
             cross build --release --target ${{ matrix.target }}
@@ -59,20 +64,29 @@ jobs:
             cargo build --release --target ${{ matrix.target }}
           fi
 
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo build --release --target ${{ matrix.target }}
+
       # - name: Build
       #   if: matrix.target != 'aarch64-unknown-linux-gnu'
       #   run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/quarkdrive-webdav* dist/ || cp target/${{ matrix.target }}/release/quarkdrive-webdav.exe dist/
+          cp target/${{ matrix.target }}/release/quarkdrive-webdav* dist/
           cd dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../quarkdrive-webdav-${{ matrix.target }}.zip *
-          else
-            tar czf ../quarkdrive-webdav-${{ matrix.target }}.tar.gz *
-          fi
+          tar czf ../quarkdrive-webdav-${{ matrix.target }}.tar.gz *
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/${{ matrix.target }}/release/quarkdrive-webdav.exe" -Destination dist/
+          Compress-Archive -Path dist/* -DestinationPath "quarkdrive-webdav-${{ matrix.target }}.zip"
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
@@ -84,6 +98,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 设置 Release 名称
+        if: matrix.os != 'windows-latest'
         id: release_vars
         run: |
           echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
