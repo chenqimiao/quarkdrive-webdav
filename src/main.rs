@@ -185,6 +185,8 @@ async fn main() -> anyhow::Result<()> {
         .set_prefer_http_download(opt.prefer_http_download);
     let cache = Arc::new(fs.dir_cache.clone());
     start_periodic_invalidate(cache.clone(), opt.refresh_cache_secs_interval);
+    let fs_for_browser = fs.clone();
+    let strip_prefix = opt.strip_prefix.clone();
     let mut dav_server_builder = DavHandler::builder()
         .filesystem(Box::new(fs))
         .locksystem(MemLs::new())
@@ -209,6 +211,8 @@ async fn main() -> anyhow::Result<()> {
         auth_password,
         tls_config,
         handler: dav_server,
+        fs: fs_for_browser,
+        strip_prefix,
     };
 
     #[cfg(not(unix))]

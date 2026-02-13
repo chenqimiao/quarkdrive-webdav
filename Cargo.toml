@@ -60,6 +60,7 @@ serde_json = "1.0.140"
 base64 = "0.22.1"
 htmlescape = "0.3.1"
 num_cpus = "1.17.0"
+percent-encoding = "2.3.2"
 
 # Unix signal support
 [target.'cfg(unix)'.dependencies]

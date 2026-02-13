@@ -34,10 +34,10 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
-    drive: QuarkDrive,
+    pub(crate) drive: QuarkDrive,
     pub(crate) dir_cache: Cache,
     uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     no_trash: bool,
     read_only: bool,
     upload_buffer_size: usize,
