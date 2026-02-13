@@ -73,7 +73,7 @@ services:
 
 
 
-启动后，用webdav客户端连接http://nas地址:8080 即可
+启动后，用webdav客户端或者浏览器连接http://nas地址:8080 即可
 
 
 ## 🚨 免责声明
