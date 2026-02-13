@@ -34,10 +34,10 @@ use tokio::io::AsyncReadExt;
 
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
-    drive: QuarkDrive,
+    pub(crate) drive: QuarkDrive,
     pub(crate) dir_cache: Cache,
     uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     no_trash: bool,
     read_only: bool,
     upload_buffer_size: usize,
@@ -1211,8 +1211,64 @@ fn is_url_expired(url: &str) -> bool {
                 .expect("Time went backwards")
                 .as_secs();
             // 预留 1 分钟
-            return current_ts >= expires - 60;
+            return current_ts + 60 >= expires;
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_url_expired_with_past_timestamp() {
+        // Expires=0 is definitely in the past
+        let url = "https://example.com/file?Expires=0";
+        assert!(is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_with_future_timestamp() {
+        // Use a timestamp far in the future (year ~2100)
+        let url = "https://example.com/file?Expires=4102444800";
+        assert!(!is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_no_expires_param() {
+        let url = "https://example.com/file?key=value";
+        // No Expires param => not expired (returns false)
+        assert!(!is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_invalid_url() {
+        let url = "not a valid url";
+        // Invalid URL => not expired (returns false)
+        assert!(!is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_within_60s_buffer() {
+        // Get current time + 30 seconds (within the 60s buffer)
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 30;
+        let url = format!("https://example.com/file?Expires={}", expires);
+        // Should be considered expired (within 60s buffer)
+        assert!(is_url_expired(&url));
+    }
+
+    #[test]
+    fn test_is_url_expired_beyond_60s_buffer() {
+        // Get current time + 120 seconds (beyond the 60s buffer)
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 120;
+        let url = format!("https://example.com/file?Expires={}", expires);
+        assert!(!is_url_expired(&url));
+    }
 }

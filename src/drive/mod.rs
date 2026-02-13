@@ -849,10 +849,92 @@ fn get_format_type(file_name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use super::*;
 
+    // --- get_format_type tests ---
+
+    #[test]
+    fn test_get_format_type_image() {
+        assert_eq!(get_format_type("photo.jpg"), "image/jpeg");
+        assert_eq!(get_format_type("photo.jpeg"), "image/jpeg");
+        assert_eq!(get_format_type("photo.JPG"), "image/jpeg");
+        assert_eq!(get_format_type("image.png"), "image/png");
+        assert_eq!(get_format_type("anim.gif"), "image/gif");
+    }
+
+    #[test]
+    fn test_get_format_type_video() {
+        assert_eq!(get_format_type("movie.mp4"), "video/mp4");
+        assert_eq!(get_format_type("movie.avi"), "video/x-msvideo");
+        assert_eq!(get_format_type("movie.mov"), "video/quicktime");
+    }
+
+    #[test]
+    fn test_get_format_type_audio() {
+        assert_eq!(get_format_type("song.mp3"), "audio/mpeg");
+        assert_eq!(get_format_type("song.wav"), "audio/wav");
+    }
+
+    #[test]
+    fn test_get_format_type_document() {
+        assert_eq!(get_format_type("report.pdf"), "application/pdf");
+        assert_eq!(get_format_type("report.doc"), "application/msword");
+        assert_eq!(get_format_type("report.docx"), "application/msword");
+        assert_eq!(get_format_type("data.xls"), "application/vnd.ms-excel");
+        assert_eq!(get_format_type("slides.pptx"), "application/vnd.ms-powerpoint");
+        assert_eq!(get_format_type("readme.txt"), "text/plain");
+    }
+
+    #[test]
+    fn test_get_format_type_archive() {
+        assert_eq!(get_format_type("archive.zip"), "application/zip");
+        assert_eq!(get_format_type("archive.rar"), "application/vnd.rar");
+        assert_eq!(get_format_type("archive.7z"), "application/x-7z-compressed");
+    }
+
+    #[test]
+    fn test_get_format_type_unknown() {
+        assert_eq!(get_format_type("file.xyz"), "application/octet-stream");
+        assert_eq!(get_format_type("noext"), "application/octet-stream");
+    }
+
+    // --- up_part_auth_meta tests ---
+
     #[tokio::test]
+    async fn test_up_part_auth_meta_format() {
+        let cookie = Arc::new(DashMap::new());
+        cookie.insert("test".to_string(), "value".to_string());
+        let config = DriveConfig {
+            api_base_url: "https://drive.quark.cn".to_string(),
+            cookie,
+        };
+        let drive = QuarkDrive::new(config).unwrap();
+
+        let result = drive
+            .up_part_auth_meta(
+                "application/octet-stream",
+                "Mon, 01 Jan 2024 00:00:00 GMT",
+                "test-bucket",
+                "test-obj-key",
+                1,
+                "test-upload-id",
+            )
+            .await
+            .unwrap();
+
+        assert!(result.starts_with("PUT\n"));
+        assert!(result.contains("application/octet-stream"));
+        assert!(result.contains("Mon, 01 Jan 2024 00:00:00 GMT"));
+        assert!(result.contains("test-bucket"));
+        assert!(result.contains("test-obj-key"));
+        assert!(result.contains("partNumber=1"));
+        assert!(result.contains("uploadId=test-upload-id"));
+    }
+
+    // --- Integration tests (require QUARK_COOKIE) ---
+
+    #[tokio::test]
+    #[ignore]
     async fn test_get_files_by_pdir_fid() {
         let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
         let cookie = Arc::new(DashMap::new());
@@ -873,6 +955,7 @@ mod tests {
 
 
     #[tokio::test]
+    #[ignore]
     async fn test_get_download_urls() {
         let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
         let cookie = Arc::new(DashMap::new());
