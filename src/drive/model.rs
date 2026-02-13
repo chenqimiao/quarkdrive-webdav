@@ -336,4 +336,107 @@ impl From<GetFilesResponse> for QuarkFiles {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_quark_file_new_root() {
+        let root = QuarkFile::new_root();
+        assert_eq!(root.fid, "0");
+        assert!(root.dir);
+        assert!(!root.file);
+        assert_eq!(root.size, 0);
+        assert_eq!(root.pdir_fid, "");
+        assert_eq!(root.file_name, "");
+        assert!(root.created_at > 0);
+        assert!(root.updated_at > 0);
+    }
+
+    #[test]
+    fn test_quark_file_deserialize_basic() {
+        let json = r#"{
+            "fid": "abc123",
+            "file_name": "test.txt",
+            "pdir_fid": "0",
+            "size": 1024,
+            "format_type": "text/plain",
+            "status": 1,
+            "created_at": 1704067200000,
+            "updated_at": 1704067200000,
+            "dir": false,
+            "file": true,
+            "download_url": null,
+            "content_hash": null,
+            "parent_path": null
+        }"#;
+        let file: QuarkFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.fid, "abc123");
+        assert_eq!(file.file_name, "test.txt");
+        assert_eq!(file.size, 1024);
+        assert!(!file.dir);
+        assert!(file.file);
+    }
+
+    #[test]
+    fn test_quark_file_deserialize_html_entity() {
+        let json = r#"{
+            "fid": "abc123",
+            "file_name": "test &amp; file &lt;1&gt;.txt",
+            "pdir_fid": "0",
+            "size": 0,
+            "format_type": "",
+            "status": 1,
+            "created_at": 0,
+            "updated_at": 0,
+            "dir": false,
+            "file": true,
+            "download_url": null,
+            "content_hash": null,
+            "parent_path": null
+        }"#;
+        let file: QuarkFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.file_name, "test & file <1>.txt");
+    }
+
+    #[test]
+    fn test_get_files_download_urls_response_into_map() {
+        let response = GetFilesDownloadUrlsResponse {
+            status: 200,
+            code: 0,
+            message: "ok".to_string(),
+            timestamp: 1704067200,
+            data: vec![
+                FileDownloadUrlItem {
+                    fid: "fid1".to_string(),
+                    download_url: "https://example.com/1".to_string(),
+                },
+                FileDownloadUrlItem {
+                    fid: "fid2".to_string(),
+                    download_url: "https://example.com/2".to_string(),
+                },
+            ],
+            metadata: FileDownloadUrlMetadata {},
+        };
+        let map = response.into_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("fid1").unwrap(), "https://example.com/1");
+        assert_eq!(map.get("fid2").unwrap(), "https://example.com/2");
+    }
+
+    #[test]
+    fn test_get_files_download_urls_response_into_map_empty() {
+        let response = GetFilesDownloadUrlsResponse {
+            status: 200,
+            code: 0,
+            message: "ok".to_string(),
+            timestamp: 0,
+            data: vec![],
+            metadata: FileDownloadUrlMetadata {},
+        };
+        let map = response.into_map();
+        assert!(map.is_empty());
+    }
+}
+
 

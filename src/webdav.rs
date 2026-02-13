@@ -351,6 +351,261 @@ fn file_icon(name: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- format_size tests ---
+
+    #[test]
+    fn test_format_size_bytes() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1), "1 B");
+        assert_eq!(format_size(1023), "1023 B");
+    }
+
+    #[test]
+    fn test_format_size_kb() {
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn test_format_size_mb() {
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_size(1024 * 1024 * 5), "5.0 MB");
+    }
+
+    #[test]
+    fn test_format_size_gb() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn test_format_size_tb() {
+        assert_eq!(format_size(1024u64 * 1024 * 1024 * 1024), "1.0 TB");
+        assert_eq!(format_size(1024u64 * 1024 * 1024 * 1024 * 3), "3.0 TB");
+    }
+
+    // --- format_timestamp tests ---
+
+    #[test]
+    fn test_format_timestamp_normal() {
+        // 2024-01-01 08:00 CST = 2024-01-01 00:00 UTC = 1704067200000 ms
+        let result = format_timestamp(1704067200000);
+        assert_eq!(result, "2024-01-01 08:00");
+    }
+
+    #[test]
+    fn test_format_timestamp_zero() {
+        // 0 ms => 1970-01-01 08:00 CST
+        let result = format_timestamp(0);
+        assert_eq!(result, "1970-01-01 08:00");
+    }
+
+    // --- html_escape tests ---
+
+    #[test]
+    fn test_html_escape_all_entities() {
+        assert_eq!(html_escape("&<>\"'"), "&amp;&lt;&gt;&quot;&#x27;");
+    }
+
+    #[test]
+    fn test_html_escape_empty() {
+        assert_eq!(html_escape(""), "");
+    }
+
+    #[test]
+    fn test_html_escape_no_special() {
+        assert_eq!(html_escape("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_html_escape_mixed() {
+        assert_eq!(
+            html_escape("a & b < c > d"),
+            "a &amp; b &lt; c &gt; d"
+        );
+    }
+
+    // --- file_icon tests ---
+
+    #[test]
+    fn test_file_icon_image() {
+        assert_eq!(file_icon("photo.jpg"), "🖼️");
+        assert_eq!(file_icon("photo.PNG"), "🖼️");
+        assert_eq!(file_icon("photo.Jpeg"), "🖼️");
+    }
+
+    #[test]
+    fn test_file_icon_video() {
+        assert_eq!(file_icon("movie.mp4"), "🎬");
+        assert_eq!(file_icon("movie.MKV"), "🎬");
+    }
+
+    #[test]
+    fn test_file_icon_audio() {
+        assert_eq!(file_icon("song.mp3"), "🎵");
+        assert_eq!(file_icon("song.FLAC"), "🎵");
+    }
+
+    #[test]
+    fn test_file_icon_document() {
+        assert_eq!(file_icon("report.pdf"), "📕");
+        assert_eq!(file_icon("report.doc"), "📝");
+        assert_eq!(file_icon("data.xlsx"), "📊");
+        assert_eq!(file_icon("slides.pptx"), "📎");
+    }
+
+    #[test]
+    fn test_file_icon_archive() {
+        assert_eq!(file_icon("archive.zip"), "📦");
+        assert_eq!(file_icon("archive.tar"), "📦");
+    }
+
+    #[test]
+    fn test_file_icon_code() {
+        assert_eq!(file_icon("main.rs"), "💻");
+        assert_eq!(file_icon("app.js"), "💻");
+        assert_eq!(file_icon("config.yaml"), "💻");
+    }
+
+    #[test]
+    fn test_file_icon_unknown() {
+        assert_eq!(file_icon("file.xyz"), "📄");
+        assert_eq!(file_icon("noext"), "📄");
+    }
+
+    // --- percent_encode_path / percent_decode tests ---
+
+    #[test]
+    fn test_percent_encode_path_chinese() {
+        let encoded = percent_encode_path("你好");
+        assert!(!encoded.contains("你"));
+        let decoded = percent_decode(&encoded);
+        assert_eq!(decoded, "你好");
+    }
+
+    #[test]
+    fn test_percent_encode_path_special_chars() {
+        let encoded = percent_encode_path("file name (1).txt");
+        assert!(!encoded.contains(' '));
+        let decoded = percent_decode(&encoded);
+        assert_eq!(decoded, "file name (1).txt");
+    }
+
+    #[test]
+    fn test_percent_decode_empty() {
+        assert_eq!(percent_decode(""), "");
+    }
+
+    #[test]
+    fn test_percent_encode_roundtrip() {
+        let original = "测试文件 & 文档.pdf";
+        let encoded = percent_encode_path(original);
+        let decoded = percent_decode(&encoded);
+        assert_eq!(decoded, original);
+    }
+
+    // --- render_directory_html tests ---
+
+    #[test]
+    fn test_render_directory_html_root_empty() {
+        let files: Vec<crate::drive::QuarkFile> = vec![];
+        let html = render_directory_html("/", &files);
+        assert!(html.contains("QuarkDrive"));
+        assert!(html.contains("0 个项目"));
+        // root should not have parent link
+        assert!(!html.contains("href=\"../\""));
+    }
+
+    #[test]
+    fn test_render_directory_html_with_files() {
+        let files = vec![
+            crate::drive::QuarkFile {
+                fid: "1".to_string(),
+                file_name: "子目录".to_string(),
+                pdir_fid: "0".to_string(),
+                size: 0,
+                format_type: "".to_string(),
+                status: 1,
+                created_at: 1704067200000,
+                updated_at: 1704067200000,
+                dir: true,
+                file: false,
+                download_url: None,
+                content_hash: None,
+                parent_path: None,
+            },
+            crate::drive::QuarkFile {
+                fid: "2".to_string(),
+                file_name: "test.txt".to_string(),
+                pdir_fid: "0".to_string(),
+                size: 1024,
+                format_type: "text/plain".to_string(),
+                status: 1,
+                created_at: 1704067200000,
+                updated_at: 1704067200000,
+                dir: false,
+                file: true,
+                download_url: None,
+                content_hash: None,
+                parent_path: None,
+            },
+        ];
+        let html = render_directory_html("/docs", &files);
+        assert!(html.contains("2 个项目"));
+        // subdirectory should have parent link
+        assert!(html.contains("href=\"../\""));
+        // should contain the directory and file names
+        assert!(html.contains("子目录"));
+        assert!(html.contains("test.txt"));
+        // file size should be formatted
+        assert!(html.contains("1.0 KB"));
+    }
+
+    #[test]
+    fn test_render_directory_html_sorting() {
+        let files = vec![
+            crate::drive::QuarkFile {
+                fid: "1".to_string(),
+                file_name: "b.txt".to_string(),
+                pdir_fid: "0".to_string(),
+                size: 100,
+                format_type: "text/plain".to_string(),
+                status: 1,
+                created_at: 0,
+                updated_at: 0,
+                dir: false,
+                file: true,
+                download_url: None,
+                content_hash: None,
+                parent_path: None,
+            },
+            crate::drive::QuarkFile {
+                fid: "2".to_string(),
+                file_name: "a.txt".to_string(),
+                pdir_fid: "0".to_string(),
+                size: 200,
+                format_type: "text/plain".to_string(),
+                status: 1,
+                created_at: 0,
+                updated_at: 0,
+                dir: false,
+                file: true,
+                download_url: None,
+                content_hash: None,
+                parent_path: None,
+            },
+        ];
+        let html = render_directory_html("/", &files);
+        let pos_a = html.find("a.txt").unwrap();
+        let pos_b = html.find("b.txt").unwrap();
+        // a.txt should come before b.txt (sorted alphabetically)
+        assert!(pos_a < pos_b);
+    }
+}
+
 impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
     type Response = Response<Body>;
     type Error = hyper::Error;
