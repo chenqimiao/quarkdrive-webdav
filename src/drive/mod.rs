@@ -48,6 +48,7 @@ pub struct DriveConfig {
 pub struct QuarkDrive {
     config: DriveConfig,
     client: ClientWithMiddleware,
+    upload_client: ClientWithMiddleware,
     download_client: ClientWithMiddleware,
 }
 
@@ -108,6 +109,18 @@ impl QuarkDrive {
         let client = ClientBuilder::new(client)
             .with(RetryTransientMiddleware::new_with_policy(retry_policy))
             .build();
+
+        // Upload client for OSS operations: no retry middleware to avoid compounding
+        // timeouts (5 retries × 300s = 25 min hang per failed chunk upload).
+        let upload_client = reqwest::Client::builder()
+            .user_agent(UA)
+            .default_headers(headers.clone())
+            .pool_idle_timeout(Duration::from_secs(50))
+            .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(pool_size)
+            .timeout(Duration::from_secs(300))
+            .build()?;
+        let upload_client = ClientBuilder::new(upload_client).build();
         
         // Configure download client with connection pooling for better performance
         let download_client = reqwest::Client::builder()
@@ -126,6 +139,7 @@ impl QuarkDrive {
         let drive = Self {
             config,
             client,
+            upload_client,
             download_client,
         };
 
@@ -721,7 +735,13 @@ impl QuarkDrive {
         headers.insert("Referer", HeaderValue::from_str(REFERER)?);
 
         //println!("{:#?}", headers);
-        let _res: EmptyResponse = self.post_request(commit_url, &xml_body, Some(headers)) .await?.context("expect response")?;
+        self.upload_client
+            .post(commit_url)
+            .body(xml_body)
+            .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?;
 
         Ok(())
 
@@ -763,7 +783,7 @@ impl QuarkDrive {
         );
         let url = reqwest::Url::parse(&oss_url)?;
         let res = self
-            .client
+            .upload_client
             .put(url.clone())
             .header("Authorization", req.auth_key.clone())
             .header("Content-Type", req.mime_type.clone())
@@ -771,51 +791,16 @@ impl QuarkDrive {
             .header("x-oss-user-agent", "aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit")
             .header("Referer", REFERER)
             .body(req.part_bytes)
-            .send().await?;
+            .send().await?
+            .error_for_status()?;
 
-        match res.error_for_status_ref() {
-            Ok(_) => {
-                if res.status() == StatusCode::NO_CONTENT {
-                    return Ok(None);
-                }
-                let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
-                return Ok(Some(etag.to_string()));
-            }
-            Err(err) => {
-                let err_msg = res.text().await?;
-                debug!(error = %err_msg, url = %url, "request failed");
-                match err.status() {
-                    Some(
-                        _status_code
-                        @
-                        (StatusCode::REQUEST_TIMEOUT
-                        | StatusCode::TOO_MANY_REQUESTS
-                        | StatusCode::INTERNAL_SERVER_ERROR
-                        | StatusCode::BAD_GATEWAY
-                        | StatusCode::SERVICE_UNAVAILABLE
-                        | StatusCode::GATEWAY_TIMEOUT),
-                    ) => {
-                        time::sleep(Duration::from_secs(2)).await;
-                        let res = self
-                            .client
-                            .put(url)
-                            .send()
-                            .await?
-                            .error_for_status()?;
-                        if res.status() == StatusCode::NO_CONTENT {
-                            return Ok(None);
-                        }
-                        let etag = res.headers().get("Etag").unwrap().to_str().unwrap();
-                        Ok(Some(etag.to_string()))
-                    }
-                    // unexpected error
-                    _ => {
-                        debug!(error = %err, "request failed");
-                        Err(err.into())
-                    }
-                }
-            }
+        if res.status() == StatusCode::NO_CONTENT {
+            return Ok(None);
         }
+        let etag = res.headers().get("Etag")
+            .ok_or_else(|| anyhow::anyhow!("missing Etag header in up_part response for part {}", req.part_number))?
+            .to_str()?;
+        Ok(Some(etag.to_string()))
     }
 }
 

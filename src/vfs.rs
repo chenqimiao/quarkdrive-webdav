@@ -984,7 +984,10 @@ impl QuarkDavFile {
                 error!(file_name = %self.file.file_name, error = %err, "upload chunk failed");
                 FsError::GeneralFailure
             })?;
-            let etag_from_up_part = res.unwrap();
+            let etag_from_up_part = res.ok_or_else(|| {
+                error!(file_name = %self.file.file_name, "upload part returned no ETag");
+                FsError::GeneralFailure
+            })?;
             // 检查是否提前完成
             if etag_from_up_part == "finish" {
                 return Ok(());
