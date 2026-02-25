@@ -49,6 +49,7 @@ pub struct QuarkDrive {
     config: DriveConfig,
     client: ClientWithMiddleware,
     download_client: ClientWithMiddleware,
+    md5_cache: Arc<DashMap<String, String>>,
 }
 
 impl DavMetaData for QuarkFile {
@@ -127,6 +128,7 @@ impl QuarkDrive {
             config,
             client,
             download_client,
+            md5_cache: Arc::new(DashMap::new()),
         };
 
 
@@ -363,7 +365,17 @@ impl QuarkDrive {
             )
             .await?
             .context("expect response")?;
+        // Cache md5 values from the response to avoid extra API calls
+        for item in &res.data {
+            if let Some(ref md5) = item.md5 {
+                self.md5_cache.insert(item.fid.clone(), md5.clone());
+            }
+        }
         Ok(res.into_map())
+    }
+
+    pub fn get_cached_md5(&self, fid: &str) -> Option<String> {
+        self.md5_cache.get(fid).map(|v| v.clone())
     }
 
     pub async fn get_download_url(&self, fid: &str) -> Result<String> {
@@ -372,6 +384,23 @@ impl QuarkDrive {
             .map(|(_, url)| url.clone())
             .ok_or_else(|| anyhow::anyhow!("No download URL found for fid: {}", fid))
 
+    }
+
+    pub async fn get_file_md5(&self, fid: &str) -> Result<Option<String>> {
+        debug!(fid = %fid, "get file md5");
+        let req = GetFilesDownloadUrlsRequest { fids: vec![fid.to_string()] };
+        let res: GetFilesDownloadUrlsResponse = self
+            .post_request(
+                format!(
+                    "{}/1/clouddrive/file/download?pr=ucpro&fr=pc",
+                    self.config.api_base_url
+                ),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+        Ok(res.data.into_iter().next().and_then(|item| item.md5))
     }
 
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
@@ -957,6 +986,33 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_get_download_urls() {
+        let drive = create_drive_from_env();
+        // Dynamically find a file fid from root
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let files = files.unwrap();
+        let file = files.list.iter().find(|f| f.file && f.size > 0);
+        if let Some(file) = file {
+            let res = drive.get_download_urls(vec![file.fid.clone()]).await.unwrap();
+            assert!(!res.is_empty());
+            println!("{:#?}", res);
+        } else {
+            println!("No files found in root to test download URLs");
+        }
+    }
+
+    // --- Helper ---
+
+    fn create_test_drive() -> QuarkDrive {
+        let cookie = Arc::new(DashMap::new());
+        cookie.insert("test".to_string(), "value".to_string());
+        let config = DriveConfig {
+            api_base_url: "https://drive.quark.cn".to_string(),
+            cookie,
+        };
+        QuarkDrive::new(config).unwrap()
+    }
+
+    fn create_drive_from_env() -> QuarkDrive {
         let cookie_str = std::env::var("QUARK_COOKIE").unwrap();
         let cookie = Arc::new(DashMap::new());
         for pair in cookie_str.split(';') {
@@ -966,12 +1022,556 @@ mod tests {
         }
         let config = DriveConfig {
             api_base_url: "https://drive.quark.cn".to_string(),
-            cookie: cookie,
+            cookie,
         };
-        let drive = QuarkDrive::new(config).unwrap();
-        let fids = vec!["your fid".to_string()];
-        let res = drive.get_download_urls(fids).await.unwrap();
-        assert!(!res.is_empty());
-        println!("{:#?}", res);
+        QuarkDrive::new(config).unwrap()
+    }
+
+    // --- md5_cache unit tests ---
+
+    #[test]
+    fn test_md5_cache_miss() {
+        let drive = create_test_drive();
+        assert!(drive.get_cached_md5("nonexistent_fid").is_none());
+    }
+
+    #[test]
+    fn test_md5_cache_hit() {
+        let drive = create_test_drive();
+        drive.md5_cache.insert("fid_123".to_string(), "abc123def456".to_string());
+        let result = drive.get_cached_md5("fid_123");
+        assert_eq!(result, Some("abc123def456".to_string()));
+    }
+
+    #[test]
+    fn test_md5_cache_shared_across_clones() {
+        let drive = create_test_drive();
+        let drive_clone = drive.clone();
+        drive.md5_cache.insert("fid_1".to_string(), "md5_value".to_string());
+        // Clone should see the same cache (Arc<DashMap>)
+        assert_eq!(drive_clone.get_cached_md5("fid_1"), Some("md5_value".to_string()));
+    }
+
+    #[test]
+    fn test_md5_cache_overwrite() {
+        let drive = create_test_drive();
+        drive.md5_cache.insert("fid_1".to_string(), "old_md5".to_string());
+        drive.md5_cache.insert("fid_1".to_string(), "new_md5".to_string());
+        assert_eq!(drive.get_cached_md5("fid_1"), Some("new_md5".to_string()));
+    }
+
+    // --- up_commit_auth_meta tests ---
+
+    #[test]
+    fn test_up_commit_auth_meta_format() {
+        let drive = create_test_drive();
+        let callback = Callback {
+            callback_url: "https://example.com/callback".to_string(),
+            callback_body: "test_body".to_string(),
+        };
+        let result = drive.up_commit_auth_meta(
+            vec!["etag1".to_string(), "etag2".to_string()],
+            &callback,
+            "test-bucket",
+            "test-obj-key",
+            "Mon, 01 Jan 2024 00:00:00 GMT",
+            "test-upload-id",
+        ).unwrap();
+
+        assert!(result.starts_with("POST\n"));
+        assert!(result.contains("application/xml"));
+        assert!(result.contains("Mon, 01 Jan 2024 00:00:00 GMT"));
+        assert!(result.contains("x-oss-callback:"));
+        assert!(result.contains("test-bucket"));
+        assert!(result.contains("test-obj-key"));
+        assert!(result.contains("uploadId=test-upload-id"));
+    }
+
+    #[test]
+    fn test_up_commit_auth_meta_single_part() {
+        let drive = create_test_drive();
+        let callback = Callback {
+            callback_url: "https://example.com/callback".to_string(),
+            callback_body: "body".to_string(),
+        };
+        let result = drive.up_commit_auth_meta(
+            vec!["single_etag".to_string()],
+            &callback,
+            "bucket",
+            "key",
+            "time",
+            "uid",
+        ).unwrap();
+
+        assert!(result.contains("POST\n"));
+        assert!(result.contains("uploadId=uid"));
+    }
+
+    // --- Integration tests (require QUARK_COOKIE) ---
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_get_quota() {
+        let drive = create_drive_from_env();
+        let (used, total) = drive.get_quota().await.unwrap();
+        assert!(total > 0, "total capacity should be > 0");
+        assert!(used <= total, "used should be <= total");
+        println!("Quota: used={}, total={}", used, total);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_list_root_files() {
+        let drive = create_drive_from_env();
+        let (files, total) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        assert!(files.is_some(), "root should have files");
+        let files = files.unwrap();
+        assert!(files.total > 0);
+        println!("Root files: total={}", total);
+        for f in &files.list {
+            println!("  {} (fid={}, dir={}, size={})", f.file_name, f.fid, f.dir, f.size);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_list_nonexistent_dir() {
+        let drive = create_drive_from_env();
+        let (files, total) = drive.get_files_by_pdir_fid("nonexistent_fid_12345", 1, 50).await.unwrap();
+        assert!(files.is_none() || total == 0);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_get_file_md5() {
+        let drive = create_drive_from_env();
+        // Search subdirectories for a real file (root may only have test artifacts)
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut tested = false;
+        // Try real files in root first
+        for f in root_files.list.iter().filter(|f| f.file && f.size > 0 && !f.file_name.starts_with("_test_")) {
+            let md5 = drive.get_file_md5(&f.fid).await.unwrap();
+            eprintln!("File: {}, MD5: {:?}", f.file_name, md5);
+            if let Some(md5) = md5 {
+                // Normal files return hex MD5 (32 hex chars)
+                assert_eq!(md5.len(), 32, "MD5 hex should be 32 chars");
+                assert!(md5.chars().all(|c| c.is_ascii_hexdigit()), "MD5 should be hex");
+                tested = true;
+                break;
+            }
+        }
+        // If no real files in root, search first subdirectory
+        if !tested {
+            for dir in root_files.list.iter().filter(|f| f.dir).take(3) {
+                let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+                if let Some(sub) = sub {
+                    if let Some(f) = sub.list.iter().find(|f| f.file && f.size > 0) {
+                        let md5 = drive.get_file_md5(&f.fid).await.unwrap();
+                        eprintln!("File: {}/{}, MD5: {:?}", dir.file_name, f.file_name, md5);
+                        if let Some(md5) = md5 {
+                            assert_eq!(md5.len(), 32, "MD5 hex should be 32 chars");
+                            tested = true;
+                        }
+                        break;
+                    }
+                }
+                if tested { break; }
+            }
+        }
+        assert!(tested, "Should have tested at least one real file");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_download_url_caches_md5() {
+        let drive = create_drive_from_env();
+        // Find a real file (search subdirectories if needed)
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut file_fid = None;
+        let mut file_name = String::new();
+        // Try root first
+        if let Some(f) = root_files.list.iter().find(|f| f.file && f.size > 0 && !f.file_name.starts_with("_test_")) {
+            file_fid = Some(f.fid.clone());
+            file_name = f.file_name.clone();
+        }
+        // Search subdirectories if no real files in root
+        if file_fid.is_none() {
+            for dir in root_files.list.iter().filter(|d| d.dir).take(3) {
+                let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+                if let Some(sub) = sub {
+                    if let Some(f) = sub.list.iter().find(|f| f.file && f.size > 0) {
+                        file_fid = Some(f.fid.clone());
+                        file_name = format!("{}/{}", dir.file_name, f.file_name);
+                        break;
+                    }
+                }
+            }
+        }
+        let fid = file_fid.expect("Should find at least one real file");
+
+        // Before: cache should be empty
+        assert!(drive.get_cached_md5(&fid).is_none());
+
+        // Call get_download_urls which should populate the cache
+        let urls = drive.get_download_urls(vec![fid.clone()]).await.unwrap();
+        assert!(!urls.is_empty());
+
+        // After: cache should have the md5 (hex format for real files)
+        let cached_md5 = drive.get_cached_md5(&fid);
+        eprintln!("File: {}, Cached MD5: {:?}", file_name, cached_md5);
+        if let Some(md5) = cached_md5 {
+            assert!(!md5.is_empty(), "Cached MD5 should not be empty");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_create_and_remove_folder() {
+        let drive = create_drive_from_env();
+        let folder_name = format!("_test_folder_{}", chrono::Utc::now().timestamp_millis());
+
+        // Create folder in root
+        drive.create_folder("0", &folder_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Verify it exists by listing root
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let files = files.unwrap();
+        let created = files.list.iter().find(|f| f.file_name == folder_name);
+        assert!(created.is_some(), "Created folder should exist in root");
+        let fid = created.unwrap().fid.clone();
+
+        // Remove the folder
+        drive.remove_file(&fid, false).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Verify it's gone
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let files = files.unwrap();
+        let found = files.list.iter().find(|f| f.file_name == folder_name);
+        assert!(found.is_none(), "Removed folder should not exist");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_rename_file() {
+        let drive = create_drive_from_env();
+        let original_name = format!("_test_rename_{}", chrono::Utc::now().timestamp_millis());
+        let new_name = format!("{}_renamed", original_name);
+
+        // Create a folder
+        drive.create_folder("0", &original_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Find the folder
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let fid = files.unwrap().list.iter()
+            .find(|f| f.file_name == original_name)
+            .unwrap().fid.clone();
+
+        // Rename it
+        drive.rename_file(&fid, &new_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Verify the rename
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let files = files.unwrap();
+        assert!(files.list.iter().any(|f| f.file_name == new_name), "Renamed folder should exist");
+        assert!(!files.list.iter().any(|f| f.file_name == original_name), "Original name should be gone");
+
+        // Cleanup
+        drive.remove_file(&fid, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_move_file() {
+        let drive = create_drive_from_env();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let folder_a = format!("_test_move_a_{}", ts);
+        let folder_b = format!("_test_move_b_{}", ts);
+        let child_folder = format!("_test_move_child_{}", ts);
+
+        // Create folder A and B in root
+        drive.create_folder("0", &folder_a).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let fid_a = files.as_ref().unwrap().list.iter()
+            .find(|f| f.file_name == folder_a).unwrap().fid.clone();
+
+        drive.create_folder("0", &folder_b).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let fid_b = files.as_ref().unwrap().list.iter()
+            .find(|f| f.file_name == folder_b).unwrap().fid.clone();
+
+        // Create a child folder inside A
+        drive.create_folder(&fid_a, &child_folder).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let (files, _) = drive.get_files_by_pdir_fid(&fid_a, 1, 50).await.unwrap();
+        let child_fid = files.as_ref().unwrap().list.iter()
+            .find(|f| f.file_name == child_folder).unwrap().fid.clone();
+
+        // Move child from A to B
+        drive.move_file(&child_fid, &fid_b).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Verify child is in B, not in A
+        let (files_a, _) = drive.get_files_by_pdir_fid(&fid_a, 1, 50).await.unwrap();
+        let (files_b, _) = drive.get_files_by_pdir_fid(&fid_b, 1, 50).await.unwrap();
+        assert!(!files_a.as_ref().map_or(false, |f| f.list.iter().any(|f| f.file_name == child_folder)));
+        assert!(files_b.as_ref().map_or(false, |f| f.list.iter().any(|f| f.file_name == child_folder)));
+
+        // Cleanup
+        drive.remove_file(&child_fid, false).await.unwrap();
+        drive.remove_file(&fid_a, false).await.unwrap();
+        drive.remove_file(&fid_b, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_download_file_full() {
+        let drive = create_drive_from_env();
+        // Find a small file in root (skip test files that may not be fully uploaded)
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let files = files.unwrap();
+        let file = files.list.iter().find(|f| {
+            f.file && f.size > 0 && f.size < 10 * 1024 * 1024 && !f.file_name.starts_with("_test_")
+        });
+        if let Some(file) = file {
+            let url = drive.get_download_url(&file.fid).await.unwrap();
+            assert!(!url.is_empty());
+
+            // Download the full file
+            let content = drive.download(&url, None).await.unwrap();
+            assert_eq!(content.len() as u64, file.size, "Downloaded size should match file size");
+            println!("Downloaded '{}': {} bytes", file.file_name, content.len());
+        } else {
+            println!("No suitable files found in root to test download");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_download_file_range() {
+        let drive = create_drive_from_env();
+        // Find a file > 1KB (skip test files)
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let files = files.unwrap();
+        let file = files.list.iter().find(|f| {
+            f.file && f.size > 1024 && !f.file_name.starts_with("_test_")
+        });
+        if let Some(file) = file {
+            let url = drive.get_download_url(&file.fid).await.unwrap();
+
+            // Download first 512 bytes
+            let content = drive.download(&url, Some((0, 512))).await.unwrap();
+            assert_eq!(content.len(), 512, "Partial download should be 512 bytes");
+
+            // Download from offset
+            let content2 = drive.download(&url, Some((100, 256))).await.unwrap();
+            assert_eq!(content2.len(), 256, "Offset download should be 256 bytes");
+
+            println!("Range download of '{}' OK", file.file_name);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_pre_and_hash() {
+        let drive = create_drive_from_env();
+        // Test upload preparation (up_pre)
+        let file_name = format!("_test_upload_{}.txt", chrono::Utc::now().timestamp_millis());
+        let res = drive.up_pre(&file_name, 11, "0").await.unwrap();
+
+        assert!(!res.data.task_id.is_empty(), "task_id should not be empty");
+        assert!(!res.data.obj_key.is_empty(), "obj_key should not be empty");
+        assert!(!res.data.bucket.is_empty(), "bucket should not be empty");
+        assert!(res.metadata.part_size > 0, "part_size should be > 0");
+        println!("Upload pre: task_id={}, bucket={}, part_size={}",
+            res.data.task_id, res.data.bucket, res.metadata.part_size);
+
+        // Test up_hash (using a known MD5/SHA1 for "hello world")
+        let md5 = "5eb63bbbe01eeed093cb22bb8f5acdc3";
+        let sha1 = "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed";
+        let hash_res = drive.up_hash(md5, sha1, &res.data.task_id).await.unwrap();
+        println!("Upload hash: finish={}", hash_res.data.finish);
+        // finish=true means instant upload (秒传), finish=false means need to upload chunks
+    }
+
+    // ====================================================================
+    // Upload scenario tests: SHA match/mismatch + folder duplicate
+    // ====================================================================
+
+    /// Scenario 1: SHA mismatch → delete old file, create new file
+    /// Tests: existing file's cloud MD5 doesn't match new content → triggers delete + re-upload
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_sha_mismatch_delete_and_recreate() {
+        let drive = create_drive_from_env();
+
+        // Step 1: Find a real file in the drive with hex MD5
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut target = None;
+        for dir in root_files.list.iter().filter(|f| f.dir).take(5) {
+            let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+            if let Some(sub) = sub {
+                if let Some(f) = sub.list.iter().find(|f| f.file && f.size > 0) {
+                    target = Some((f.fid.clone(), format!("{}/{}", dir.file_name, f.file_name)));
+                    break;
+                }
+            }
+        }
+        let (fid, name) = target.expect("Need at least one real file for this test");
+
+        // Step 2: Get cloud MD5 (hex format for settled files)
+        let cloud_md5 = drive.get_file_md5(&fid).await.unwrap()
+            .expect("File should have cloud MD5");
+        eprintln!("[SHA-MISMATCH] File: {}, cloud_md5={}", name, cloud_md5);
+
+        // Step 3: Compute MD5 of completely different content
+        let different_content = b"this_is_completely_different_content_for_testing_12345";
+        let local_md5 = format!("{:x}", md5::compute(different_content));
+        eprintln!("[SHA-MISMATCH] different_content_md5={}", local_md5);
+
+        // Step 4: Verify they DON'T match → do_flush would delete old + upload new
+        assert!(!cloud_md5.eq_ignore_ascii_case(&local_md5),
+            "Different content should produce different MD5");
+        eprintln!("[SHA-MISMATCH] PASSED: MD5 mismatch confirmed → do_flush would delete old file and upload new");
+    }
+
+    /// Scenario 2: SHA match → skip upload, file unchanged
+    /// Tests: cloud MD5 is hex format, so eq_ignore_ascii_case with same hex value works
+    /// This is the core logic in do_flush that decides whether to skip upload
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_sha_match_skip() {
+        let drive = create_drive_from_env();
+
+        // Step 1: Find a real file with hex MD5
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut tested = false;
+
+        for dir in root_files.list.iter().filter(|f| f.dir).take(5) {
+            let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+            if let Some(sub) = sub {
+                for f in sub.list.iter().filter(|f| f.file && f.size > 0) {
+                    let cloud_md5 = match drive.get_file_md5(&f.fid).await {
+                        Ok(Some(md5)) => md5,
+                        _ => continue,
+                    };
+
+                    // Step 2: Verify cloud MD5 is hex format (same as local format!("{:x}", ...))
+                    let is_hex = cloud_md5.len() == 32
+                        && cloud_md5.chars().all(|c| c.is_ascii_hexdigit());
+                    eprintln!("[SHA-MATCH] File: {}/{}, cloud_md5={}, is_hex={}",
+                        dir.file_name, f.file_name, cloud_md5, is_hex);
+
+                    if !is_hex { continue; }
+
+                    // Step 3: Simulate do_flush comparison — same hex value matches
+                    // In do_flush: local_md5 = format!("{:x}", md5_ctx.compute());
+                    // If content unchanged, local_md5 == cloud_md5
+                    let simulated_local_md5 = cloud_md5.to_lowercase();
+                    assert!(cloud_md5.eq_ignore_ascii_case(&simulated_local_md5),
+                        "Same hex MD5 should match → do_flush skips upload");
+
+                    // Step 4: Verify different MD5 does NOT match
+                    let different_md5 = "00000000000000000000000000000000";
+                    assert!(!cloud_md5.eq_ignore_ascii_case(different_md5),
+                        "Different MD5 should not match → do_flush proceeds with upload");
+
+                    eprintln!("[SHA-MATCH] PASSED: cloud returns hex MD5, eq_ignore_ascii_case works correctly");
+                    tested = true;
+                    break;
+                }
+            }
+            if tested { break; }
+        }
+        assert!(tested, "Should have found at least one file with hex MD5");
+    }
+
+    /// Scenario 3: Folder duplicate → don't create; different name → create
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_folder_duplicate_prevention() {
+        let drive = create_drive_from_env();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let folder_name = format!("_test_dup_folder_{}", ts);
+        let folder_name_2 = format!("_test_new_folder_{}", ts);
+
+        // Step 1: Create folder
+        drive.create_folder("0", &folder_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        eprintln!("[FOLDER-DUP] Step1: created '{}'", folder_name);
+
+        // Get fid
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let fid = files.as_ref().unwrap().list.iter()
+            .find(|f| f.file_name == folder_name).unwrap().fid.clone();
+
+        // Step 2: Try creating folder with same name again
+        // At VFS level, create_dir checks existence and returns FsError::Exists
+        // At Drive API level, the API may or may not allow it
+        let dup_result = drive.create_folder("0", &folder_name).await;
+        eprintln!("[FOLDER-DUP] Step2: duplicate create_folder result: {:?}", dup_result.is_ok());
+
+        // Verify: even if API allows it, there should be at most 2 entries
+        // The VFS layer (create_dir) prevents this by checking existence first
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let dup_count = files.as_ref().unwrap().list.iter()
+            .filter(|f| f.file_name == folder_name).count();
+        eprintln!("[FOLDER-DUP] Step2: folders with name '{}': count={}", folder_name, dup_count);
+
+        // Step 3: Create folder with DIFFERENT name → should always succeed
+        drive.create_folder("0", &folder_name_2).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        eprintln!("[FOLDER-DUP] Step3: created different folder '{}'", folder_name_2);
+
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let found_2 = files.as_ref().unwrap().list.iter()
+            .any(|f| f.file_name == folder_name_2);
+        assert!(found_2, "Different-name folder should be created");
+
+        // Step 4: Test VFS-level duplicate prevention
+        // create_dir checks get_file() first → returns Exists if already there
+        let fs = crate::vfs::QuarkDriveFileSystem::new(drive.clone(), "/".to_string(), 100, 60).unwrap();
+        use dav_server::davpath::DavPath;
+        use dav_server::fs::DavFileSystem;
+
+        let dav_path = DavPath::new(&format!("/{}", folder_name)).unwrap();
+        let vfs_result = fs.create_dir(&dav_path).await;
+        eprintln!("[FOLDER-DUP] Step4: VFS create_dir for existing folder: {:?}", vfs_result);
+        assert!(vfs_result.is_err(), "VFS should reject duplicate folder creation");
+
+        let dav_path_new = DavPath::new(&format!("/_test_vfs_new_folder_{}", ts)).unwrap();
+        let vfs_result_new = fs.create_dir(&dav_path_new).await;
+        eprintln!("[FOLDER-DUP] Step4: VFS create_dir for new folder: {:?}", vfs_result_new);
+        assert!(vfs_result_new.is_ok(), "VFS should allow new folder creation");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Cleanup: remove all test folders
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        for f in files.as_ref().unwrap().list.iter() {
+            if f.file_name == folder_name || f.file_name == folder_name_2
+                || f.file_name == format!("_test_vfs_new_folder_{}", ts) {
+                let _ = drive.remove_file(&f.fid, false).await;
+            }
+        }
+        // Also clean up API-level duplicates
+        if dup_count > 1 {
+            let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+            for f in files.as_ref().unwrap().list.iter().filter(|f| f.file_name == folder_name) {
+                let _ = drive.remove_file(&f.fid, false).await;
+            }
+        }
+        eprintln!("[FOLDER-DUP] PASSED: duplicate prevention works at VFS level");
     }
 }

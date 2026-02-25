@@ -142,6 +142,19 @@ impl QuarkDriveFileSystem {
     }
 
 
+    pub(crate) async fn get_file_md5_for_path(&self, path: &Path) -> Option<String> {
+        let file = self.get_file(path.to_path_buf()).await.ok()??;
+        if file.fid.is_empty() {
+            return None;
+        }
+        // Try cached md5 first (populated by get_download_urls during file serving)
+        if let Some(md5) = self.drive.get_cached_md5(&file.fid) {
+            return Some(md5);
+        }
+        // Fall back to API call
+        self.drive.get_file_md5(&file.fid).await.ok()?
+    }
+
     fn normalize_dav_path(&self, dav_path: &DavPath) -> PathBuf {
         let path = dav_path.as_pathbuf();
         if self.root.parent().is_none() || path.starts_with(&self.root) {
@@ -205,7 +218,8 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     file,
                     parent_file.fid,
                     parent_path.to_path_buf(),
-                    options.size.unwrap_or_default(),
+                    // Always start at 0: consume_buf() accumulates the actual bytes written
+                    0u64,
                     sha1,
                 )
             } else if options.write && (options.create || options.create_new) {
@@ -669,7 +683,7 @@ impl QuarkDavFile {
         }
     }
     async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
-        if self.upload_state.is_finished  {
+        if self.upload_state.is_finished {
             return Ok(false);
         }
         if !self.upload_state.is_uploading {
@@ -680,47 +694,51 @@ impl QuarkDavFile {
                 .as_millis();
             self.upload_state.temp_file_path = format!("/tmp/{}_{}", timestamp, self.file.file_name);
         }
-        if self.upload_state.chunk_count == 0 {
-            let size = self.upload_state.size;
-            debug!(file_name = %self.file.file_name, size = size, "prepare for upload");
-            if !self.file.fid.is_empty() {
-                if let Some(content_hash) = self.file.content_hash.as_ref() {
-                    if let Some(sha1) = self.upload_state.sha1.as_ref() {
-                        if content_hash.eq_ignore_ascii_case(sha1) {
-                            debug!(file_name = %self.file.file_name, sha1 = %sha1, "skip uploading same content hash file");
-                            return Ok(false);
-                        }
-                    }
-                }
-                if self.fs.skip_upload_same_size && self.file.size == size {
-                    debug!(file_name = %self.file.file_name, size = size, "skip uploading same size file");
-                    self.upload_state.is_finished = true;
-                    return Ok(false);
-                }
-                // existing file, delete before upload
-                if let Err(err) = self
-                    .fs
-                    .drive
-                    .remove_file(&self.file.fid, !self.fs.no_trash)
-                    .await
-                {
-                    error!(file_name = %self.file.file_name, error = %err, "delete file before upload failed");
-                }
-            }
-            // 由云端计算
-            // 除了 size 和sha1 其余由云端获得
-            // TODO ..
-            // let upload_buffer_size = self.fs.upload_buffer_size as u64;
-            // let chunk_count =
-            //     size / upload_buffer_size + if size % upload_buffer_size != 0 { 1 } else { 0 };
-            // self.upload_state.chunk_count = chunk_count;
-        }
         Ok(true)
-
     }
 
     async fn do_flush(&mut self) -> Result<(), FsError> {
         let size = self.upload_state.size;
+
+        // Compute final SHA-1 and MD5 (all data has been written)
+        let sha1 = format!("{:x}", self.sha1_ctx.clone().finalize());
+        let md5 = format!("{:x}", self.md5_ctx.clone().compute());
+
+        // If old file exists, compare hash before deleting
+        if !self.file.fid.is_empty() {
+            // Fetch the cloud file's MD5 via download API and compare
+            match self.fs.drive.get_file_md5(&self.file.fid).await {
+                Ok(Some(cloud_md5)) if cloud_md5.eq_ignore_ascii_case(&md5) => {
+                    debug!(file_name = %self.file.file_name, md5 = %md5,
+                           "skip uploading: content hash unchanged");
+                    self.upload_state.is_finished = true;
+                    self.after_flush().await?;
+                    return Ok(());
+                }
+                Ok(_) => {
+                    // MD5 differs or not available, proceed with upload
+                }
+                Err(err) => {
+                    // Failed to get MD5, proceed with upload anyway
+                    debug!(file_name = %self.file.file_name, error = %err,
+                           "failed to get cloud file md5, proceeding with upload");
+                }
+            }
+            if self.fs.skip_upload_same_size && self.file.size == size {
+                debug!(file_name = %self.file.file_name, size = size,
+                       "skip uploading: same size");
+                self.upload_state.is_finished = true;
+                self.after_flush().await?;
+                return Ok(());
+            }
+            // Content is different, now delete old file before uploading
+            if let Err(err) = self.fs.drive
+                .remove_file(&self.file.fid, !self.fs.no_trash).await
+            {
+                error!(file_name = %self.file.file_name, error = %err,
+                       "delete file before upload failed");
+            }
+        }
 
         // up_pre
         let res = self
@@ -766,11 +784,7 @@ impl QuarkDavFile {
         };
         self.upload_state.upload_id = upload_id;
 
-        // unHash
-        let md5 = self.md5_ctx.clone().compute();
-        let md5 = format!("{:x}", md5);
-        let sha1 = self.sha1_ctx.clone().finalize();
-        let sha1 = format!("{:x}", sha1);
+        // up_hash (reuse already-computed md5 and sha1)
         let task_id = self.upload_state.task_id.clone();
         let res = self.fs.drive.up_hash(&md5, &sha1, &task_id).await.map_err(|err| {
             error!(file_id = %self.file.fid, file_name = %self.file.file_name, error = %err, "hash file failed");
@@ -787,7 +801,35 @@ impl QuarkDavFile {
     }
 
 
-        async fn upload_mini_byte_file(&mut self) -> Result<(), FsError> {
+    async fn upload_mini_byte_file(&mut self) -> Result<(), FsError> {
+        // Empty file MD5
+        let empty_md5 = "d41d8cd98f00b204e9800998ecf8427e";
+
+        // If old file exists, compare hash before deleting
+        if !self.file.fid.is_empty() {
+            match self.fs.drive.get_file_md5(&self.file.fid).await {
+                Ok(Some(cloud_md5)) if cloud_md5.eq_ignore_ascii_case(empty_md5) => {
+                    debug!(file_name = %self.file.file_name,
+                           "skip uploading: empty file content hash unchanged");
+                    self.upload_state.is_finished = true;
+                    self.after_flush().await?;
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    debug!(file_name = %self.file.file_name, error = %err,
+                           "failed to get cloud file md5, proceeding with upload");
+                }
+            }
+            // Content is different, now delete old file before uploading
+            if let Err(err) = self.fs.drive
+                .remove_file(&self.file.fid, !self.fs.no_trash).await
+            {
+                error!(file_name = %self.file.file_name, error = %err,
+                       "delete file before upload failed");
+            }
+        }
+
         // pre -> hash -> commit -> finish
         // up_pre
         let res = self
@@ -1270,5 +1312,36 @@ mod tests {
             .as_secs() + 120;
         let url = format!("https://example.com/file?Expires={}", expires);
         assert!(!is_url_expired(&url));
+    }
+
+    #[test]
+    fn test_is_url_expired_empty_string() {
+        assert!(!is_url_expired(""));
+    }
+
+    #[test]
+    fn test_is_url_expired_with_multiple_params() {
+        // URL with multiple params, Expires in the middle
+        let url = "https://example.com/file?OSSAccessKeyId=xxx&Expires=0&Signature=yyy";
+        assert!(is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_exactly_at_boundary() {
+        // Get current time + exactly 60 seconds (at boundary)
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 60;
+        let url = format!("https://example.com/file?Expires={}", expires);
+        // current_ts + 60 >= expires → should be expired at boundary
+        assert!(is_url_expired(&url));
+    }
+
+    #[test]
+    fn test_is_url_expired_non_numeric_expires() {
+        let url = "https://example.com/file?Expires=not_a_number";
+        // Non-numeric Expires should not cause a panic, returns false
+        assert!(!is_url_expired(url));
     }
 }
