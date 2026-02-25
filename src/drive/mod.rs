@@ -374,6 +374,23 @@ impl QuarkDrive {
 
     }
 
+    pub async fn get_file_md5(&self, fid: &str) -> Result<Option<String>> {
+        debug!(fid = %fid, "get file md5");
+        let req = GetFilesDownloadUrlsRequest { fids: vec![fid.to_string()] };
+        let res: GetFilesDownloadUrlsResponse = self
+            .post_request(
+                format!(
+                    "{}/1/clouddrive/file/download?pr=ucpro&fr=pc",
+                    self.config.api_base_url
+                ),
+                &req,
+                None
+            )
+            .await?
+            .context("expect response")?;
+        Ok(res.data.into_iter().next().and_then(|item| item.md5))
+    }
+
     pub async fn download<U: IntoUrl>(&self, url: U, range: Option<(u64, usize)>) -> Result<Bytes> {
         use reqwest::header::RANGE;
         let cookie = self.resolve_cookies().await;

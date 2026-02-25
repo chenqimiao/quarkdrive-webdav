@@ -255,6 +255,8 @@ pub struct QuarkFiles {
 pub struct FileDownloadUrlItem {
     pub fid: String,
     pub download_url: String,
+    #[serde(default)]
+    pub md5: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -410,10 +412,12 @@ mod tests {
                 FileDownloadUrlItem {
                     fid: "fid1".to_string(),
                     download_url: "https://example.com/1".to_string(),
+                    md5: None,
                 },
                 FileDownloadUrlItem {
                     fid: "fid2".to_string(),
                     download_url: "https://example.com/2".to_string(),
+                    md5: None,
                 },
             ],
             metadata: FileDownloadUrlMetadata {},
