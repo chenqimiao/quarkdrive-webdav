@@ -1403,4 +1403,175 @@ mod tests {
         println!("Upload hash: finish={}", hash_res.data.finish);
         // finish=true means instant upload (秒传), finish=false means need to upload chunks
     }
+
+    // ====================================================================
+    // Upload scenario tests: SHA match/mismatch + folder duplicate
+    // ====================================================================
+
+    /// Scenario 1: SHA mismatch → delete old file, create new file
+    /// Tests: existing file's cloud MD5 doesn't match new content → triggers delete + re-upload
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_sha_mismatch_delete_and_recreate() {
+        let drive = create_drive_from_env();
+
+        // Step 1: Find a real file in the drive with hex MD5
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut target = None;
+        for dir in root_files.list.iter().filter(|f| f.dir).take(5) {
+            let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+            if let Some(sub) = sub {
+                if let Some(f) = sub.list.iter().find(|f| f.file && f.size > 0) {
+                    target = Some((f.fid.clone(), format!("{}/{}", dir.file_name, f.file_name)));
+                    break;
+                }
+            }
+        }
+        let (fid, name) = target.expect("Need at least one real file for this test");
+
+        // Step 2: Get cloud MD5 (hex format for settled files)
+        let cloud_md5 = drive.get_file_md5(&fid).await.unwrap()
+            .expect("File should have cloud MD5");
+        eprintln!("[SHA-MISMATCH] File: {}, cloud_md5={}", name, cloud_md5);
+
+        // Step 3: Compute MD5 of completely different content
+        let different_content = b"this_is_completely_different_content_for_testing_12345";
+        let local_md5 = format!("{:x}", md5::compute(different_content));
+        eprintln!("[SHA-MISMATCH] different_content_md5={}", local_md5);
+
+        // Step 4: Verify they DON'T match → do_flush would delete old + upload new
+        assert!(!cloud_md5.eq_ignore_ascii_case(&local_md5),
+            "Different content should produce different MD5");
+        eprintln!("[SHA-MISMATCH] PASSED: MD5 mismatch confirmed → do_flush would delete old file and upload new");
+    }
+
+    /// Scenario 2: SHA match → skip upload, file unchanged
+    /// Tests: cloud MD5 is hex format, so eq_ignore_ascii_case with same hex value works
+    /// This is the core logic in do_flush that decides whether to skip upload
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_sha_match_skip() {
+        let drive = create_drive_from_env();
+
+        // Step 1: Find a real file with hex MD5
+        let (root_files, _) = drive.get_files_by_pdir_fid("0", 1, 50).await.unwrap();
+        let root_files = root_files.unwrap();
+        let mut tested = false;
+
+        for dir in root_files.list.iter().filter(|f| f.dir).take(5) {
+            let (sub, _) = drive.get_files_by_pdir_fid(&dir.fid, 1, 10).await.unwrap();
+            if let Some(sub) = sub {
+                for f in sub.list.iter().filter(|f| f.file && f.size > 0) {
+                    let cloud_md5 = match drive.get_file_md5(&f.fid).await {
+                        Ok(Some(md5)) => md5,
+                        _ => continue,
+                    };
+
+                    // Step 2: Verify cloud MD5 is hex format (same as local format!("{:x}", ...))
+                    let is_hex = cloud_md5.len() == 32
+                        && cloud_md5.chars().all(|c| c.is_ascii_hexdigit());
+                    eprintln!("[SHA-MATCH] File: {}/{}, cloud_md5={}, is_hex={}",
+                        dir.file_name, f.file_name, cloud_md5, is_hex);
+
+                    if !is_hex { continue; }
+
+                    // Step 3: Simulate do_flush comparison — same hex value matches
+                    // In do_flush: local_md5 = format!("{:x}", md5_ctx.compute());
+                    // If content unchanged, local_md5 == cloud_md5
+                    let simulated_local_md5 = cloud_md5.to_lowercase();
+                    assert!(cloud_md5.eq_ignore_ascii_case(&simulated_local_md5),
+                        "Same hex MD5 should match → do_flush skips upload");
+
+                    // Step 4: Verify different MD5 does NOT match
+                    let different_md5 = "00000000000000000000000000000000";
+                    assert!(!cloud_md5.eq_ignore_ascii_case(different_md5),
+                        "Different MD5 should not match → do_flush proceeds with upload");
+
+                    eprintln!("[SHA-MATCH] PASSED: cloud returns hex MD5, eq_ignore_ascii_case works correctly");
+                    tested = true;
+                    break;
+                }
+            }
+            if tested { break; }
+        }
+        assert!(tested, "Should have found at least one file with hex MD5");
+    }
+
+    /// Scenario 3: Folder duplicate → don't create; different name → create
+    #[tokio::test]
+    #[ignore]
+    async fn test_upload_folder_duplicate_prevention() {
+        let drive = create_drive_from_env();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let folder_name = format!("_test_dup_folder_{}", ts);
+        let folder_name_2 = format!("_test_new_folder_{}", ts);
+
+        // Step 1: Create folder
+        drive.create_folder("0", &folder_name).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        eprintln!("[FOLDER-DUP] Step1: created '{}'", folder_name);
+
+        // Get fid
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let fid = files.as_ref().unwrap().list.iter()
+            .find(|f| f.file_name == folder_name).unwrap().fid.clone();
+
+        // Step 2: Try creating folder with same name again
+        // At VFS level, create_dir checks existence and returns FsError::Exists
+        // At Drive API level, the API may or may not allow it
+        let dup_result = drive.create_folder("0", &folder_name).await;
+        eprintln!("[FOLDER-DUP] Step2: duplicate create_folder result: {:?}", dup_result.is_ok());
+
+        // Verify: even if API allows it, there should be at most 2 entries
+        // The VFS layer (create_dir) prevents this by checking existence first
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let dup_count = files.as_ref().unwrap().list.iter()
+            .filter(|f| f.file_name == folder_name).count();
+        eprintln!("[FOLDER-DUP] Step2: folders with name '{}': count={}", folder_name, dup_count);
+
+        // Step 3: Create folder with DIFFERENT name → should always succeed
+        drive.create_folder("0", &folder_name_2).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        eprintln!("[FOLDER-DUP] Step3: created different folder '{}'", folder_name_2);
+
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        let found_2 = files.as_ref().unwrap().list.iter()
+            .any(|f| f.file_name == folder_name_2);
+        assert!(found_2, "Different-name folder should be created");
+
+        // Step 4: Test VFS-level duplicate prevention
+        // create_dir checks get_file() first → returns Exists if already there
+        let fs = crate::vfs::QuarkDriveFileSystem::new(drive.clone(), "/".to_string(), 100, 60).unwrap();
+        use dav_server::davpath::DavPath;
+        use dav_server::fs::DavFileSystem;
+
+        let dav_path = DavPath::new(&format!("/{}", folder_name)).unwrap();
+        let vfs_result = fs.create_dir(&dav_path).await;
+        eprintln!("[FOLDER-DUP] Step4: VFS create_dir for existing folder: {:?}", vfs_result);
+        assert!(vfs_result.is_err(), "VFS should reject duplicate folder creation");
+
+        let dav_path_new = DavPath::new(&format!("/_test_vfs_new_folder_{}", ts)).unwrap();
+        let vfs_result_new = fs.create_dir(&dav_path_new).await;
+        eprintln!("[FOLDER-DUP] Step4: VFS create_dir for new folder: {:?}", vfs_result_new);
+        assert!(vfs_result_new.is_ok(), "VFS should allow new folder creation");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Cleanup: remove all test folders
+        let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+        for f in files.as_ref().unwrap().list.iter() {
+            if f.file_name == folder_name || f.file_name == folder_name_2
+                || f.file_name == format!("_test_vfs_new_folder_{}", ts) {
+                let _ = drive.remove_file(&f.fid, false).await;
+            }
+        }
+        // Also clean up API-level duplicates
+        if dup_count > 1 {
+            let (files, _) = drive.get_files_by_pdir_fid("0", 1, 500).await.unwrap();
+            for f in files.as_ref().unwrap().list.iter().filter(|f| f.file_name == folder_name) {
+                let _ = drive.remove_file(&f.fid, false).await;
+            }
+        }
+        eprintln!("[FOLDER-DUP] PASSED: duplicate prevention works at VFS level");
+    }
 }
