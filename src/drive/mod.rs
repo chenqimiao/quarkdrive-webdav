@@ -450,7 +450,7 @@ impl QuarkDrive {
     async fn delete_file(&self, file_id: &str) -> Result<()> {
         debug!(file_id = %file_id, "delete file");
         let req = DeleteFilesRequest {
-            action_type: 2u8,
+            action_type: 1u8,
             exclude_fids: vec![],
             filelist: vec![file_id.to_string()],
         };
