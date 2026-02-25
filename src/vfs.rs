@@ -142,6 +142,19 @@ impl QuarkDriveFileSystem {
     }
 
 
+    pub(crate) async fn get_file_md5_for_path(&self, path: &Path) -> Option<String> {
+        let file = self.get_file(path.to_path_buf()).await.ok()??;
+        if file.fid.is_empty() {
+            return None;
+        }
+        // Try cached md5 first (populated by get_download_urls during file serving)
+        if let Some(md5) = self.drive.get_cached_md5(&file.fid) {
+            return Some(md5);
+        }
+        // Fall back to API call
+        self.drive.get_file_md5(&file.fid).await.ok()?
+    }
+
     fn normalize_dav_path(&self, dav_path: &DavPath) -> PathBuf {
         let path = dav_path.as_pathbuf();
         if self.root.parent().is_none() || path.starts_with(&self.root) {
@@ -1299,5 +1312,36 @@ mod tests {
             .as_secs() + 120;
         let url = format!("https://example.com/file?Expires={}", expires);
         assert!(!is_url_expired(&url));
+    }
+
+    #[test]
+    fn test_is_url_expired_empty_string() {
+        assert!(!is_url_expired(""));
+    }
+
+    #[test]
+    fn test_is_url_expired_with_multiple_params() {
+        // URL with multiple params, Expires in the middle
+        let url = "https://example.com/file?OSSAccessKeyId=xxx&Expires=0&Signature=yyy";
+        assert!(is_url_expired(url));
+    }
+
+    #[test]
+    fn test_is_url_expired_exactly_at_boundary() {
+        // Get current time + exactly 60 seconds (at boundary)
+        let expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 60;
+        let url = format!("https://example.com/file?Expires={}", expires);
+        // current_ts + 60 >= expires → should be expired at boundary
+        assert!(is_url_expired(&url));
+    }
+
+    #[test]
+    fn test_is_url_expired_non_numeric_expires() {
+        let url = "https://example.com/file?Expires=not_a_number";
+        // Non-numeric Expires should not cause a panic, returns false
+        assert!(!is_url_expired(url));
     }
 }

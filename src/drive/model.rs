@@ -441,6 +441,236 @@ mod tests {
         let map = response.into_map();
         assert!(map.is_empty());
     }
+
+    // --- QuarkFile deserialization edge cases ---
+
+    #[test]
+    fn test_quark_file_deserialize_with_optional_fields() {
+        let json = r#"{
+            "fid": "abc",
+            "file_name": "test.txt",
+            "pdir_fid": "0",
+            "size": 2048,
+            "format_type": "text/plain",
+            "status": 1,
+            "created_at": 1704067200000,
+            "updated_at": 1704067200000,
+            "dir": false,
+            "file": true,
+            "download_url": "https://example.com/download",
+            "content_hash": "abc123sha1hash",
+            "parent_path": "/docs"
+        }"#;
+        let file: QuarkFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.download_url, Some("https://example.com/download".to_string()));
+        assert_eq!(file.content_hash, Some("abc123sha1hash".to_string()));
+        assert_eq!(file.parent_path, Some("/docs".to_string()));
+    }
+
+    #[test]
+    fn test_quark_file_deserialize_size_default() {
+        // size field uses #[serde(default)], so missing size should default to 0
+        let json = r#"{
+            "fid": "abc",
+            "file_name": "dir",
+            "pdir_fid": "0",
+            "format_type": "",
+            "status": 1,
+            "created_at": 0,
+            "updated_at": 0,
+            "dir": true,
+            "file": false,
+            "download_url": null,
+            "content_hash": null,
+            "parent_path": null
+        }"#;
+        let file: QuarkFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.size, 0);
+        assert!(file.dir);
+    }
+
+    // --- FileDownloadUrlItem deserialization ---
+
+    #[test]
+    fn test_file_download_url_item_with_md5() {
+        let json = r#"{
+            "fid": "file_123",
+            "download_url": "https://cdn.example.com/file",
+            "md5": "d41d8cd98f00b204e9800998ecf8427e"
+        }"#;
+        let item: FileDownloadUrlItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.fid, "file_123");
+        assert_eq!(item.download_url, "https://cdn.example.com/file");
+        assert_eq!(item.md5, Some("d41d8cd98f00b204e9800998ecf8427e".to_string()));
+    }
+
+    #[test]
+    fn test_file_download_url_item_without_md5() {
+        // md5 uses #[serde(default)], so missing field should be None
+        let json = r#"{
+            "fid": "file_123",
+            "download_url": "https://cdn.example.com/file"
+        }"#;
+        let item: FileDownloadUrlItem = serde_json::from_str(json).unwrap();
+        assert_eq!(item.fid, "file_123");
+        assert!(item.md5.is_none());
+    }
+
+    #[test]
+    fn test_file_download_url_item_null_md5() {
+        let json = r#"{
+            "fid": "file_123",
+            "download_url": "https://cdn.example.com/file",
+            "md5": null
+        }"#;
+        let item: FileDownloadUrlItem = serde_json::from_str(json).unwrap();
+        assert!(item.md5.is_none());
+    }
+
+    // --- Response structure ---
+
+    #[test]
+    fn test_response_structure_deserialize() {
+        let json = r#"{
+            "status": 200,
+            "code": 0,
+            "message": "ok",
+            "timestamp": 1704067200,
+            "data": {},
+            "metadata": {}
+        }"#;
+        let resp: Response<EmptyData, EmptyMetadata> = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.code, 0);
+        assert_eq!(resp.message, "ok");
+        assert_eq!(resp.timestamp, 1704067200);
+    }
+
+    #[test]
+    fn test_response_error_status() {
+        // status is u8 in the API (200 = success, other values = error)
+        let json = r#"{
+            "status": 0,
+            "code": 10001,
+            "message": "invalid params",
+            "timestamp": 1704067200,
+            "data": {},
+            "metadata": {}
+        }"#;
+        let resp: Response<EmptyData, EmptyMetadata> = serde_json::from_str(json).unwrap();
+        assert_ne!(resp.status, 200);
+        assert_eq!(resp.code, 10001);
+        assert_eq!(resp.message, "invalid params");
+    }
+
+    // --- Callback serialization ---
+
+    #[test]
+    fn test_callback_serialize_camel_case() {
+        let callback = Callback {
+            callback_url: "https://example.com/callback".to_string(),
+            callback_body: "test_body".to_string(),
+        };
+        let json = serde_json::to_string(&callback).unwrap();
+        // Should use camelCase due to #[serde(rename)]
+        assert!(json.contains("callbackUrl"));
+        assert!(json.contains("callbackBody"));
+        assert!(!json.contains("callback_url"));
+        assert!(!json.contains("callback_body"));
+    }
+
+    #[test]
+    fn test_callback_deserialize_camel_case() {
+        let json = r#"{
+            "callbackUrl": "https://example.com/cb",
+            "callbackBody": "body_content"
+        }"#;
+        let cb: Callback = serde_json::from_str(json).unwrap();
+        assert_eq!(cb.callback_url, "https://example.com/cb");
+        assert_eq!(cb.callback_body, "body_content");
+    }
+
+    #[test]
+    fn test_callback_roundtrip() {
+        let original = Callback {
+            callback_url: "https://example.com/callback".to_string(),
+            callback_body: "{\"key\":\"value\"}".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: Callback = serde_json::from_str(&json).unwrap();
+        assert_eq!(original.callback_url, deserialized.callback_url);
+        assert_eq!(original.callback_body, deserialized.callback_body);
+    }
+
+    // --- FilesMetadata deserialization ---
+
+    #[test]
+    fn test_files_metadata_deserialize() {
+        let json = r#"{
+            "_total": 100,
+            "_count": 50,
+            "_page": 1
+        }"#;
+        let meta: FilesMetadata = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.total, 100);
+        assert_eq!(meta.count, 50);
+        assert_eq!(meta.page, 1);
+    }
+
+    // --- UpHashResponseData ---
+
+    #[test]
+    fn test_up_hash_response_finish_true() {
+        let json = r#"{"finish": true}"#;
+        let data: UpHashResponseData = serde_json::from_str(json).unwrap();
+        assert!(data.finish);
+    }
+
+    #[test]
+    fn test_up_hash_response_finish_false() {
+        let json = r#"{"finish": false}"#;
+        let data: UpHashResponseData = serde_json::from_str(json).unwrap();
+        assert!(!data.finish);
+    }
+
+    // --- GetSpaceInfoResponseData ---
+
+    #[test]
+    fn test_space_info_deserialize() {
+        let json = r#"{
+            "total_capacity": 6597069766656,
+            "use_capacity": 1234567890
+        }"#;
+        let data: GetSpaceInfoResponseData = serde_json::from_str(json).unwrap();
+        assert_eq!(data.total_capacity, 6597069766656);
+        assert_eq!(data.use_capacity, 1234567890);
+    }
+
+    // --- QuarkFiles from GetFilesResponse ---
+
+    #[test]
+    fn test_quark_files_from_response() {
+        let response = GetFilesResponse {
+            status: 200,
+            code: 0,
+            message: "ok".to_string(),
+            timestamp: 0,
+            data: FilesData {
+                list: vec![
+                    QuarkFile::new_root(),
+                ],
+            },
+            metadata: FilesMetadata {
+                total: 1,
+                count: 1,
+                page: 1,
+            },
+        };
+        let quark_files: QuarkFiles = response.into();
+        assert_eq!(quark_files.total, 1);
+        assert_eq!(quark_files.list.len(), 1);
+        assert_eq!(quark_files.list[0].fid, "0");
+    }
 }
 
 

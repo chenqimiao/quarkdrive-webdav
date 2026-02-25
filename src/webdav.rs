@@ -604,6 +604,187 @@ mod tests {
         // a.txt should come before b.txt (sorted alphabetically)
         assert!(pos_a < pos_b);
     }
+
+    // --- compute_fs_path tests ---
+
+    fn create_test_webdav(root: &str, strip_prefix: Option<&str>) -> QuarkDriveWebDav {
+        use std::sync::Arc;
+        use dashmap::DashMap;
+        let cookie = Arc::new(DashMap::new());
+        cookie.insert("test".to_string(), "value".to_string());
+        let config = crate::drive::DriveConfig {
+            api_base_url: "https://drive.quark.cn".to_string(),
+            cookie,
+        };
+        let drive = crate::drive::QuarkDrive::new(config).unwrap();
+        let fs = crate::vfs::QuarkDriveFileSystem::new(drive, root.to_string(), 100, 60).unwrap();
+        let handler = DavHandler::builder()
+            .filesystem(Box::new(fs.clone()))
+            .build_handler();
+        QuarkDriveWebDav {
+            auth_user: None,
+            auth_password: None,
+            handler,
+            fs,
+            strip_prefix: strip_prefix.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_compute_fs_path_root() {
+        let webdav = create_test_webdav("/", None);
+        assert_eq!(webdav.compute_fs_path("/"), std::path::PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_compute_fs_path_simple_file() {
+        let webdav = create_test_webdav("/", None);
+        assert_eq!(webdav.compute_fs_path("/test.txt"), std::path::PathBuf::from("/test.txt"));
+    }
+
+    #[test]
+    fn test_compute_fs_path_nested() {
+        let webdav = create_test_webdav("/", None);
+        assert_eq!(
+            webdav.compute_fs_path("/docs/report.pdf"),
+            std::path::PathBuf::from("/docs/report.pdf")
+        );
+    }
+
+    #[test]
+    fn test_compute_fs_path_with_strip_prefix() {
+        let webdav = create_test_webdav("/", Some("/dav"));
+        // "/dav/test.txt" after stripping "/dav" → "/test.txt"
+        assert_eq!(
+            webdav.compute_fs_path("/dav/test.txt"),
+            std::path::PathBuf::from("/test.txt")
+        );
+    }
+
+    #[test]
+    fn test_compute_fs_path_strip_prefix_root() {
+        let webdav = create_test_webdav("/", Some("/dav"));
+        assert_eq!(webdav.compute_fs_path("/dav/"), std::path::PathBuf::from("/"));
+        assert_eq!(webdav.compute_fs_path("/dav"), std::path::PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_compute_fs_path_with_custom_root() {
+        let webdav = create_test_webdav("/myroot", None);
+        assert_eq!(webdav.compute_fs_path("/"), std::path::PathBuf::from("/myroot"));
+        assert_eq!(
+            webdav.compute_fs_path("/test.txt"),
+            std::path::PathBuf::from("/myroot/test.txt")
+        );
+    }
+
+    #[test]
+    fn test_compute_fs_path_trailing_slash() {
+        let webdav = create_test_webdav("/", None);
+        assert_eq!(
+            webdav.compute_fs_path("/docs/"),
+            std::path::PathBuf::from("/docs")
+        );
+    }
+
+    #[test]
+    fn test_compute_fs_path_percent_encoded() {
+        let webdav = create_test_webdav("/", None);
+        // "%E6%B5%8B%E8%AF%95" is percent-encoded "测试"
+        let path = webdav.compute_fs_path("/%E6%B5%8B%E8%AF%95.txt");
+        assert_eq!(path, std::path::PathBuf::from("/测试.txt"));
+    }
+
+    #[test]
+    fn test_compute_fs_path_custom_root_and_prefix() {
+        let webdav = create_test_webdav("/myroot", Some("/dav"));
+        assert_eq!(
+            webdav.compute_fs_path("/dav/file.txt"),
+            std::path::PathBuf::from("/myroot/file.txt")
+        );
+    }
+
+    // --- Digest header tests ---
+
+    #[test]
+    fn test_digest_hex_md5_to_base64() {
+        use base64::Engine;
+        // API normally returns hex MD5; we convert to base64 per RFC 3230
+        let hex_md5 = "d41d8cd98f00b204e9800998ecf8427e"; // MD5 of empty string
+        let md5_bytes = hex::decode(hex_md5).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&md5_bytes);
+        assert_eq!(b64, "1B2M2Y8AsgTpgAmY7PhCfg==");
+        let header_value = format!("md5={}", b64);
+        assert!(hyper::header::HeaderValue::from_str(&header_value).is_ok());
+    }
+
+    #[test]
+    fn test_digest_hex_md5_hello_world() {
+        use base64::Engine;
+        let hex_md5 = "5eb63bbbe01eeed093cb22bb8f5acdc3"; // MD5 of "hello world"
+        let md5_bytes = hex::decode(hex_md5).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&md5_bytes);
+        // Verify round-trip
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+        assert_eq!(hex::encode(&decoded), hex_md5);
+    }
+
+    #[test]
+    fn test_digest_fallback_already_base64() {
+        // If hex::decode fails, the value is used as-is (base64 fallback)
+        let already_b64 = "XrY7u+Ae7tCTyyK7j1rNww==";
+        assert!(hex::decode(already_b64).is_err()); // not valid hex
+        let header_value = format!("md5={}", already_b64);
+        assert!(hyper::header::HeaderValue::from_str(&header_value).is_ok());
+    }
+
+    #[test]
+    fn test_digest_header_format() {
+        use base64::Engine;
+        let hex_md5 = "d3bdad63084cd4dc4e7120ec48a11082"; // real file MD5
+        let md5_bytes = hex::decode(hex_md5).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&md5_bytes);
+        let header_value = format!("md5={}", b64);
+        assert!(hyper::header::HeaderValue::from_str(&header_value).is_ok());
+        assert!(header_value.starts_with("md5="));
+    }
+
+    // --- Want-Digest header parsing ---
+
+    #[test]
+    fn test_want_digest_contains_md5() {
+        let val = "md5";
+        assert!(val.to_lowercase().contains("md5"));
+    }
+
+    #[test]
+    fn test_want_digest_contains_md5_mixed_case() {
+        let val = "MD5;q=1, SHA-256;q=0.5";
+        assert!(val.to_lowercase().contains("md5"));
+    }
+
+    #[test]
+    fn test_want_digest_no_md5() {
+        let val = "sha-256, sha-512";
+        assert!(!val.to_lowercase().contains("md5"));
+    }
+
+    #[test]
+    fn test_want_digest_logic() {
+        // Simulate the Want-Digest decision logic from webdav.rs
+        fn should_add_digest(want_digest: &Option<String>) -> bool {
+            match want_digest {
+                Some(val) => val.to_lowercase().contains("md5"),
+                None => true, // No header = add by default
+            }
+        }
+
+        assert!(should_add_digest(&None));
+        assert!(should_add_digest(&Some("md5".to_string())));
+        assert!(should_add_digest(&Some("MD5;q=1, SHA-256".to_string())));
+        assert!(!should_add_digest(&Some("sha-256".to_string())));
+        assert!(!should_add_digest(&Some("sha-512".to_string())));
+    }
 }
 
 impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
@@ -618,10 +799,15 @@ impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
         let auth_pwd = self.auth_password.clone();
         let is_browser = Self::is_browser_request(&req);
         let req_path = req.uri().path().to_string();
+        let req_method = req.method().clone();
+        let want_digest = req
+            .headers()
+            .get("want-digest")
+            .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
         let browser_handler = self.clone();
 
         Box::pin(async move {
-            if should_auth {
+            let mut resp = if should_auth {
                 let auth_user_val = auth_user.clone().unwrap();
                 let auth_pwd_val = auth_pwd.clone().unwrap();
 
@@ -647,7 +833,7 @@ impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
                 }
 
                 let config = DavConfig::new().principal(user);
-                Ok(dav_server.handle_with(config, req).await)
+                dav_server.handle_with(config, req).await
             } else {
                 if is_browser {
                     if let Some(resp) = browser_handler.handle_browser_request(&req_path).await {
@@ -655,8 +841,38 @@ impl Service<Request<hyper::body::Incoming>> for QuarkDriveWebDav {
                     }
                 }
 
-                Ok(dav_server.handle(req).await)
+                dav_server.handle(req).await
+            };
+
+            // RFC 3230: Add Digest header for GET 200 responses
+            if req_method == Method::GET && resp.status() == hyper::StatusCode::OK {
+                let should_add = match &want_digest {
+                    Some(val) => val.to_lowercase().contains("md5"),
+                    None => true,
+                };
+                if should_add {
+                    let fs_path = browser_handler.compute_fs_path(&req_path);
+                    if let Some(md5_val) =
+                        browser_handler.fs.get_file_md5_for_path(&fs_path).await
+                    {
+                        // API normally returns hex MD5; convert to base64 per RFC 3230
+                        let b64 = if let Ok(md5_bytes) = hex::decode(&md5_val) {
+                            use base64::Engine;
+                            base64::engine::general_purpose::STANDARD.encode(&md5_bytes)
+                        } else {
+                            // Already base64 or other format, use as-is
+                            md5_val
+                        };
+                        if let Ok(val) =
+                            hyper::header::HeaderValue::from_str(&format!("md5={}", b64))
+                        {
+                            resp.headers_mut().insert("digest", val);
+                        }
+                    }
+                }
             }
+
+            Ok(resp)
         })
     }
 }
