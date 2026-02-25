@@ -2,6 +2,7 @@ use std::fmt::{Debug, Formatter};
 use std::io::{SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -29,14 +30,19 @@ use tokio::io::AsyncWriteExt;
 use sha1::Digest;
 use tokio::fs::File;
 
+use tokio::sync::Mutex;
+
 use crate::drive::model::{Callback, UpAuthAndCommitRequest, UpPartMethodRequest};
 use tokio::io::AsyncReadExt;
+
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct QuarkDriveFileSystem {
     pub(crate) drive: QuarkDrive,
     pub(crate) dir_cache: Cache,
     uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
+    upload_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     pub(crate) root: PathBuf,
     no_trash: bool,
     read_only: bool,
@@ -59,6 +65,7 @@ impl QuarkDriveFileSystem {
             drive,
             dir_cache,
             uploading: Arc::new(DashMap::new()),
+            upload_locks: Arc::new(DashMap::new()),
             root,
             no_trash: false,
             read_only: false,
@@ -105,6 +112,17 @@ impl QuarkDriveFileSystem {
                 files.swap_remove(index);
             }
         }
+    }
+
+    fn get_upload_lock(&self, file_path: &str) -> Arc<Mutex<()>> {
+        self.upload_locks
+            .entry(file_path.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn remove_upload_lock(&self, file_path: &str) {
+        self.upload_locks.remove(file_path);
     }
 
     async fn find_in_cache(&self, path: &Path) -> Result<Option<QuarkFile>, FsError> {
@@ -629,6 +647,7 @@ struct QuarkDavFile {
     http_download: bool,
     md5_ctx: Md5Context,
     sha1_ctx: Sha1,
+    upload_lock_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 impl Debug for QuarkDavFile {
@@ -666,6 +685,7 @@ impl QuarkDavFile {
             http_download: false,
             md5_ctx: Md5Context::new(),
             sha1_ctx: Sha1::default(),
+            upload_lock_guard: None,
         }
     }
     async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
@@ -673,12 +693,19 @@ impl QuarkDavFile {
             return Ok(false);
         }
         if !self.upload_state.is_uploading {
+            // Acquire per-file upload lock to prevent concurrent uploads of the same file
+            let file_path = format!("{}/{}", self.parent_dir.display(), self.file.file_name);
+            let lock = self.fs.get_upload_lock(&file_path);
+            let guard = lock.clone().lock_owned().await;
+            self.upload_lock_guard = Some(guard);
+
             self.upload_state.is_uploading = true;
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis();
-            self.upload_state.temp_file_path = format!("/tmp/{}_{}", timestamp, self.file.file_name);
+            let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            self.upload_state.temp_file_path = format!("/tmp/{}_{}_{}", timestamp, counter, self.file.file_name);
         }
         if self.upload_state.chunk_count == 0 {
             let size = self.upload_state.size;
@@ -849,7 +876,8 @@ impl QuarkDavFile {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        self.upload_state.temp_file_path = format!("./temp/{}_{}", timestamp, self.file.file_name);
+        let counter = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.upload_state.temp_file_path = format!("./temp/{}_{}_{}", timestamp, counter, self.file.file_name);
 
         // 创建一个空白文件txt
         let empty_file_content = b"";
@@ -1034,6 +1062,10 @@ impl QuarkDavFile {
         let parent_path = self.file.parent_path.as_ref().unwrap().as_str();
         self.fs.remove_uploading_file(parent_path, &self.file.file_name);
         self.upload_state = UploadState::default();
+        // Release per-file upload lock
+        let file_path = format!("{}/{}", self.parent_dir.display(), self.file.file_name);
+        self.upload_lock_guard.take();
+        self.fs.remove_upload_lock(&file_path);
         // sleep 1s for quark server to update cache
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         self.fs.dir_cache.invalidate(self.parent_dir.as_path()).await;
