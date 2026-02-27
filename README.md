@@ -28,10 +28,19 @@
 >
 > 本项目作者没有上传需求, 所以上传实现较为简单，测试场景不能全部覆盖，后续会慢慢优化
 
-## 安装
+## 二进制安装
 
-可以从 [GitHub Releases](https://github.com/chenqimiao/quarkdrive-webdav/releases) 页面下载预先构建的二进制包
+### 从 GitHub Releases 下载
 
+可以从 [GitHub Releases](https://github.com/chenqimiao/quarkdrive-webdav/releases) 页面下载预先构建的二进制包，支持 Linux、macOS、Windows 多平台。
+
+### 通过 Cargo 安装
+
+如果已安装 [Rust](https://www.rust-lang.org/tools/install) 工具链，可以直接通过 Cargo 安装：
+
+```bash
+cargo install quarkdrive-webdav
+```
 
 ## 命令行启动
 
@@ -40,7 +49,7 @@ quarkdrive-webdav --quark-cookie '你的cookie' -U '用户名' -W '密码' -p 80
 ```
 
 
-## Docker 运行
+## Docker 
 
 ### docker run
 ```bash
@@ -82,8 +91,3 @@ services:
 本项目可能存在未知的缺陷和风险（包括但不限于设备损坏和账号封禁等），使用者应自行承担使用本项目所产生的所有风险及责任。
 作者不保证本项目的准确性、完整性、及时性、可靠性，也不承担任何因使用本项目而产生的任何损失或损害责任。
 使用本项目即表示您已阅读并同意本免责声明的全部内容。
-
-
-
-## 本项目参考了以下开源项目，特此鸣谢
-- [aliyundrive-webdav](https://github.com/messense/aliyundrive-webdav)
