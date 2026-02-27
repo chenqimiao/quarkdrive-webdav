@@ -135,8 +135,6 @@ pub fn start_periodic_invalidate(cache: Arc<Cache>, secs: u64) {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
-    #[cfg(feature = "native-tls-vendored")]
-    openssl_probe::init_openssl_env_vars();
     let opt = Opt::parse();
     if env::var("RUST_LOG").is_err() {
         if opt.debug {

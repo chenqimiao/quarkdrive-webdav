@@ -20,7 +20,7 @@ dav-server = { version = "0.8.0", default-features = false, features = ["hyper"]
 tokio = { version = "1.45.1", features = ["full"] }
 futures-util = "0.3.31"
 clap = { version = "4.5.40", features = ["derive", "env", "wrap_help"] }
-reqwest = { version = "0.12.20", features = ["rustls-tls"] }
+reqwest = { version = "0.12.20", default-features = false, features = ["rustls-tls"] }
 reqwest-middleware = { version = "0.4.2", features = ["json"] }
 reqwest-retry = "0.7"
 #reqwest-tracing = "0.5.7"
@@ -50,8 +50,8 @@ chrono = { version = "0.4", features = ["alloc"] }
 tracing-subscriber = {version = "0.3.19", features = ["env-filter"]}
 # signal-hook = {version = "0.3.18", features = ["default"]}
 # signal-hook-tokio = "0.3.1"
-openssl-probe = {version = "0.1.6", optional = true}
-openssl = { version = "0.10.73", features = ["vendored"] }
+#openssl-probe = {version = "0.1.6", optional = true}
+#openssl = { version = "0.10.73", features = ["vendored"] }
 #dirs = "6.0.0"
 serde_json = "1.0.140"
 #atty = "0.2.14"
@@ -69,7 +69,7 @@ signal-hook = {version = "0.3.18", features = ["default"]}
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 
 [profile.release]
-lto = true
+lto = "thin"
 
 [package.metadata.deb]
 maintainer = "Qimiao Chen <chenqimiao1994@126.com>"
