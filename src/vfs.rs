@@ -233,9 +233,30 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     .ok_or(FsError::GeneralFailure)?
                     .to_string();
 
-                // 忽略 macOS 上的一些特殊文件
+                // 忽略 macOS 上的一些特殊文件，静默丢弃写入
                 if name == ".DS_Store" || name.starts_with("._") {
-                    return Err(FsError::NotFound);
+                    debug!(name = %name, "ignoring macOS metadata file, silently discarding");
+                    let dummy_file = QuarkFile {
+                        fid: String::new(),
+                        file_name: name,
+                        pdir_fid: String::new(),
+                        size: 0,
+                        format_type: "application/octet-stream".to_string(),
+                        status: 1,
+                        dir: false,
+                        file: true,
+                        content_hash: None,
+                        created_at: 0,
+                        updated_at: 0,
+                        download_url: None,
+                        parent_path: Some(parent_path.to_string_lossy().into_owned()),
+                    };
+                    let dav_file = QuarkDavFile::new_skip(
+                        self.clone(),
+                        dummy_file,
+                        parent_path.to_path_buf(),
+                    );
+                    return Ok(Box::new(dav_file) as Box<dyn DavFile>);
                 }
 
                 let now = std::time::SystemTime::now()
@@ -643,6 +664,8 @@ struct QuarkDavFile {
     http_download: bool,
     md5_ctx: Md5Context,
     sha1_ctx: Sha1,
+    /// If true, silently discard all writes without uploading (used for .DS_Store etc.)
+    skip_upload: bool,
 }
 
 impl Debug for QuarkDavFile {
@@ -680,9 +703,32 @@ impl QuarkDavFile {
             http_download: false,
             md5_ctx: Md5Context::new(),
             sha1_ctx: Sha1::default(),
+            skip_upload: false,
+        }
+    }
+
+    fn new_skip(
+        fs: QuarkDriveFileSystem,
+        file: QuarkFile,
+        parent_dir: PathBuf,
+    ) -> Self {
+        Self {
+            fs,
+            file,
+            parent_file_id: String::new(),
+            parent_dir,
+            current_pos: 0,
+            upload_state: UploadState::default(),
+            http_download: false,
+            md5_ctx: Md5Context::new(),
+            sha1_ctx: Sha1::default(),
+            skip_upload: true,
         }
     }
     async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
+        if self.skip_upload {
+            return Ok(false);
+        }
         if self.upload_state.is_finished {
             return Ok(false);
         }
