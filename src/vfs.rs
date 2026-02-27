@@ -233,11 +233,6 @@ impl DavFileSystem for QuarkDriveFileSystem {
                     .ok_or(FsError::GeneralFailure)?
                     .to_string();
 
-                // 忽略 macOS 上的一些特殊文件
-                if name == ".DS_Store" || name.starts_with("._") {
-                    return Err(FsError::NotFound);
-                }
-
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
@@ -326,6 +321,7 @@ impl DavFileSystem for QuarkDriveFileSystem {
                 let root_file = QuarkFile::new_root();
                 return Ok(Box::new(root_file) as Box<dyn DavMetaData>);
             }
+
             // if not found in cache, get from uploading files: self.fs.uploading
             let mut file = self.get_file(path.clone()).await.unwrap_or_else(|_| Option::None);
             if file.is_none() {
@@ -682,6 +678,7 @@ impl QuarkDavFile {
             sha1_ctx: Sha1::default(),
         }
     }
+
     async fn prepare_for_upload(&mut self) -> Result<bool, FsError> {
         if self.upload_state.is_finished {
             return Ok(false);

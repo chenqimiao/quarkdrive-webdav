@@ -13,8 +13,34 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
-      - name: 输出 Docker 版本
-        run: docker version
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+
+      - name: 缓存 Cargo 依赖
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: docker-musl
+
+      - name: 安装交叉编译工具链
+        run: sudo apt-get update && sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+
+      - name: 编译 amd64
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: 交叉编译 arm64
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target aarch64-unknown-linux-musl
+
+      - name: 准备二进制文件
+        run: |
+          mkdir -p bin/amd64 bin/arm64
+          cp target/x86_64-unknown-linux-musl/release/quarkdrive-webdav bin/amd64/
+          cp target/aarch64-unknown-linux-musl/release/quarkdrive-webdav bin/arm64/
+          strip bin/amd64/quarkdrive-webdav
+          aarch64-linux-gnu-strip bin/arm64/quarkdrive-webdav
 
       - name: 设置 Docker 镜像标签
         id: vars
