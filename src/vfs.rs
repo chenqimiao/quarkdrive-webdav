@@ -792,8 +792,127 @@ impl QuarkDavFile {
             self.after_flush().await?;
             return Ok(());
         }
-        self.upload_chunk().await?;
-        self.after_flush().await?;
+        // Spawn upload task so it won't be cancelled if client disconnects.
+        // We still await the result — if the client stays connected, it gets the real result.
+        // If the client disconnects (e.g. timeout), the spawned task continues uploading.
+        let drive = self.fs.drive.clone();
+        let upload_state = self.upload_state.clone();
+        let file_name = self.file.file_name.clone();
+        let parent_path = self.file.parent_path.as_ref().unwrap().clone();
+        let parent_dir = self.parent_dir.clone();
+        let fs = self.fs.clone();
+
+        let handle = tokio::spawn(async move {
+            // upload chunks
+            let chunk_size = upload_state.chunk_size as usize;
+            let temp_path = &upload_state.temp_file_path;
+            let file = File::open(temp_path).await.map_err(|err| {
+                error!(file_name = %file_name, error = %err, "open temp file failed");
+                FsError::GeneralFailure
+            })?;
+            let mut file = tokio::io::BufReader::new(file);
+            let chunk_count = upload_state.chunk_count;
+            let mut etags = vec![String::new(); chunk_count as usize];
+
+            let mime_type = &upload_state.mime_type;
+            let obj_key = &upload_state.obj_key;
+            let bucket = &upload_state.bucket;
+            let task_id = &upload_state.task_id;
+            let upload_id = &upload_state.upload_id;
+            let upload_url = &upload_state.upload_url;
+
+            for chunk_idx in 1..=chunk_count {
+                let bytes_to_read = if chunk_idx == chunk_count {
+                    let remaining_bytes = upload_state.size as usize - ((chunk_idx - 1) as usize * chunk_size);
+                    std::cmp::min(remaining_bytes, chunk_size)
+                } else {
+                    chunk_size
+                };
+                let mut buf = vec![0u8; bytes_to_read];
+                file.read_exact(&mut buf).await.map_err(|e| {
+                    error!(file_name = %file_name, error = %e, "read temp file failed");
+                    FsError::GeneralFailure
+                })?;
+                let now: chrono::DateTime<chrono::Utc> = chrono::Utc::now();
+                let utc_time = now.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+                let auth_meta = drive.up_part_auth_meta(mime_type, &utc_time, bucket, obj_key, chunk_idx as u32, upload_id).await.map_err(|err| {
+                    error!(file_name = %file_name, error = %err, "get upload part auth meta failed");
+                    FsError::GeneralFailure
+                })?;
+                let auth_info = &upload_state.auth_info;
+                let auth_res = drive.auth(auth_info, &auth_meta, task_id).await.map_err(|err| {
+                    error!(file_name = %file_name, error = %err, "auth upload part failed");
+                    FsError::GeneralFailure
+                })?;
+                let up_req = UpPartMethodRequest {
+                    auth_key: auth_res.data.auth_key,
+                    mime_type: upload_state.mime_type.clone(),
+                    utc_time,
+                    bucket: bucket.clone(),
+                    upload_url: upload_url.clone(),
+                    obj_key: obj_key.clone(),
+                    part_number: chunk_idx as u32,
+                    upload_id: upload_id.to_string(),
+                    part_bytes: buf,
+                };
+                let res = drive.up_part(up_req).await.map_err(|err| {
+                    error!(file_name = %file_name, error = %err, "upload chunk failed");
+                    FsError::GeneralFailure
+                })?;
+                let etag_from_up_part = res.unwrap();
+                if etag_from_up_part == "finish" {
+                    // cleanup
+                    if tokio::fs::metadata(temp_path).await.is_ok() {
+                        let _ = tokio::fs::remove_file(temp_path).await;
+                    }
+                    fs.remove_uploading_file(&parent_path, &file_name);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    fs.dir_cache.invalidate(parent_dir.as_path()).await;
+                    return Ok(());
+                }
+                etags[(chunk_idx - 1) as usize] = etag_from_up_part;
+            }
+
+            // commit
+            let callback = upload_state.callback.clone().unwrap();
+            let commit_req = UpAuthAndCommitRequest {
+                md5s: etags,
+                callback,
+                bucket: bucket.clone(),
+                obj_key: obj_key.clone(),
+                upload_id: upload_id.clone(),
+                auth_info: upload_state.auth_info.clone(),
+                task_id: task_id.clone(),
+                upload_url: upload_url.clone(),
+            };
+            drive.up_auth_and_commit(commit_req).await.map_err(|err| {
+                error!(file_name = %file_name, error = %err, "commit upload failed");
+                FsError::GeneralFailure
+            })?;
+            drive.finish(obj_key, task_id).await.map_err(|err| {
+                error!(file_name = %file_name, error = %err, "finish upload failed");
+                FsError::GeneralFailure
+            })?;
+
+            // cleanup
+            if tokio::fs::metadata(temp_path).await.is_ok() {
+                let _ = tokio::fs::remove_file(temp_path).await;
+            }
+            fs.remove_uploading_file(&parent_path, &file_name);
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            fs.dir_cache.invalidate(parent_dir.as_path()).await;
+
+            Ok::<(), FsError>(())
+        });
+
+        // Await the spawned task — if client disconnects, the task keeps running
+        handle.await.map_err(|err| {
+            error!(file_name = %self.file.file_name, error = %err, "upload task join failed");
+            FsError::GeneralFailure
+        })??;
+
+        // Mark state as done (if we got here, upload succeeded and client is still connected)
+        self.upload_state = UploadState::default();
         Ok(())
     }
 
