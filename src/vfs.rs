@@ -15,7 +15,7 @@ use dav_server::{
     },
 };
 use futures_util::future::{ready, FutureExt};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 use crate::{
     cache::Cache,
     drive::{QuarkDrive, QuarkFile},
@@ -43,6 +43,7 @@ pub struct QuarkDriveFileSystem {
     upload_buffer_size: usize,
     skip_upload_same_size: bool,
     prefer_http_download: bool,
+    upload_wait_timeout: u64,
 }
 
 impl QuarkDriveFileSystem {
@@ -65,6 +66,7 @@ impl QuarkDriveFileSystem {
             upload_buffer_size: 16 * 1024 * 1024,
             skip_upload_same_size: false,
             prefer_http_download: false,
+            upload_wait_timeout: 280,
         })
     }
 
@@ -90,6 +92,11 @@ impl QuarkDriveFileSystem {
 
     pub fn set_prefer_http_download(&mut self, prefer_http_download: bool) -> &mut Self {
         self.prefer_http_download = prefer_http_download;
+        self
+    }
+
+    pub fn set_upload_wait_timeout(&mut self, upload_wait_timeout: u64) -> &mut Self {
+        self.upload_wait_timeout = upload_wait_timeout;
         self
     }
     fn list_uploading_files(&self, parent_file_path: &str) -> Vec<QuarkFile> {
@@ -905,13 +912,35 @@ impl QuarkDavFile {
             Ok::<(), FsError>(())
         });
 
-        // Await the spawned task — if client disconnects, the task keeps running
-        handle.await.map_err(|err| {
-            error!(file_name = %self.file.file_name, error = %err, "upload task join failed");
-            FsError::GeneralFailure
-        })??;
+        // Wait for upload to complete, but return early if upload_wait_timeout is reached
+        // to avoid client timeout. The spawned task continues uploading in the background.
+        let upload_wait_timeout = self.fs.upload_wait_timeout;
+        if upload_wait_timeout > 0 {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(upload_wait_timeout),
+                handle,
+            ).await {
+                Ok(result) => {
+                    // Upload finished within timeout, return real result
+                    result.map_err(|err| {
+                        error!(file_name = %self.file.file_name, error = %err, "upload task join failed");
+                        FsError::GeneralFailure
+                    })??;
+                }
+                Err(_) => {
+                    // Timeout reached, upload continues in background
+                    info!(file_name = %self.file.file_name, timeout_secs = upload_wait_timeout,
+                          "upload still in progress, returning early to avoid client timeout");
+                }
+            }
+        } else {
+            // Wait indefinitely
+            handle.await.map_err(|err| {
+                error!(file_name = %self.file.file_name, error = %err, "upload task join failed");
+                FsError::GeneralFailure
+            })??;
+        }
 
-        // Mark state as done (if we got here, upload succeeded and client is still connected)
         self.upload_state = UploadState::default();
         Ok(())
     }

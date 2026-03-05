@@ -99,6 +99,13 @@ struct Opt {
 
     #[arg(long, env = "REFRESH_CACHE_SECS_INTERVAL", default_value = "300")]
     refresh_cache_secs_interval: u64,
+
+    /// Max seconds to wait for upload completion before returning early to client.
+    /// If upload is still in progress after this timeout, return success to avoid
+    /// client timeout while upload continues in the background.
+    /// Set to 0 to wait indefinitely. Defaults to 280 seconds.
+    #[arg(long, env = "UPLOAD_WAIT_TIMEOUT", default_value = "280")]
+    upload_wait_timeout: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -180,7 +187,8 @@ async fn main() -> anyhow::Result<()> {
         .set_read_only(opt.read_only)
         .set_upload_buffer_size(opt.upload_buffer_size)
         .set_skip_upload_same_size(opt.skip_upload_same_size)
-        .set_prefer_http_download(opt.prefer_http_download);
+        .set_prefer_http_download(opt.prefer_http_download)
+        .set_upload_wait_timeout(opt.upload_wait_timeout);
     let cache = Arc::new(fs.dir_cache.clone());
     start_periodic_invalidate(cache.clone(), opt.refresh_cache_secs_interval);
     let fs_for_browser = fs.clone();
