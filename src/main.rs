@@ -188,13 +188,14 @@ async fn main() -> anyhow::Result<()> {
         _ => bail!("tls-cert and tls-key must be specified together."),
     };
     let drive = QuarkDrive::new(drive_config)?;
-    let mut fs = QuarkDriveFileSystem::new(drive, opt.root, opt.cache_size, opt.cache_ttl, opt.chunk_cache_mb * 1024 * 1024)?;
+    let mut fs = QuarkDriveFileSystem::new(drive, opt.root, opt.cache_size, opt.cache_ttl)?;
     fs.set_no_trash(opt.no_trash)
         .set_read_only(opt.read_only)
         .set_upload_buffer_size(opt.upload_buffer_size)
         .set_skip_upload_same_size(opt.skip_upload_same_size)
         .set_prefer_http_download(opt.prefer_http_download)
-        .set_upload_wait_timeout(opt.upload_wait_timeout);
+        .set_upload_wait_timeout(opt.upload_wait_timeout)
+        .set_chunk_cache_bytes(opt.chunk_cache_mb * 1024 * 1024);
     let cache = Arc::new(fs.dir_cache.clone());
     start_periodic_invalidate(cache.clone(), opt.refresh_cache_secs_interval);
     let fs_for_browser = fs.clone();

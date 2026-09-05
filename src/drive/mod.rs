@@ -93,19 +93,21 @@ impl QuarkDrive {
             .base(2)
             .build_with_max_retries(5);
 
+        let cpu_count = num_cpus::get();
+        let pool_size: usize = min(cpu_count.saturating_mul(2), 16).max(3);
+
         /*
-            连接池按**实际并发度**定，不按 CPU 核数。
+            下载客户端的池单独算：它的并发度是**预取窗口定死的**（AHEAD），和 CPU
+            核数没关系。按 `min(cpu*2, 16)` 算的话，10 核机器上会开到 16 条常驻
+            空闲连接，而实际同时在跑的下载最多 AHEAD 条。
 
-            原来是 `min(cpu*2, 16)`。那个公式的假设是「并发请求数随核数增长」，
-            但这里的并发度是预取窗口定死的（AHEAD = 4），和有几个核没关系——
-            10 核机器上它开到 16，两个 client 加起来 32 条常驻空闲连接。
+            为什么要收：**夸克是按连接维度限速的**。多余的空闲长连接没有收益，却
+            可能把账号推进限流档——症状会表现成「用久了变慢」，几乎无法反推到这里。
 
-            为什么要收：**夸克是按连接维度限速的**。一批空闲长连接不但没用，还可能
-            把账号推进限流档，而症状会表现成「用久了变慢」，几乎无法反推到这里。
-
-            +2 的余量留给目录列举和直链续期——它们和下载是并行的。
+            +2 的余量给直链续期这类和下载并行的小请求。API 和上传走另一个 client，
+            不受这里影响。
         */
-        let pool_size: usize = crate::prefetch::AHEAD + 2;
+        let download_pool_size: usize = crate::prefetch::AHEAD + 2;
 
         let client = reqwest::Client::builder()
             .user_agent(UA)
@@ -127,7 +129,7 @@ impl QuarkDrive {
             .default_headers(headers)
             // Enable connection pooling to avoid TCP handshake overhead on each request
             .pool_idle_timeout(Duration::from_secs(50))
-            .pool_max_idle_per_host(pool_size) // Increase pool size for concurrent downloads
+            .pool_max_idle_per_host(download_pool_size)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300)) // Increase timeout for large files
             .build()?;

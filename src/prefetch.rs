@@ -44,6 +44,8 @@ use crate::drive::QuarkDrive;
 pub const CHUNK: u64 = 16 * 1024 * 1024;
 /// 同时在途几块。**不是越大越好**，8 并发实测反而更慢。
 pub const AHEAD: usize = 4;
+/// 块缓存的默认上限。见 `set_chunk_cache_bytes`。
+pub const DEFAULT_CACHE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// 已拉回的块，按 (fid, 块号) 共享。
 ///

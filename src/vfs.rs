@@ -51,7 +51,7 @@ pub struct QuarkDriveFileSystem {
 
 impl QuarkDriveFileSystem {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(drive: QuarkDrive, root: String, cache_size: u64, cache_ttl: u64, chunk_cache_bytes: u64) -> Result<Self> {
+    pub fn new(drive: QuarkDrive, root: String, cache_size: u64, cache_ttl: u64) -> Result<Self> {
         let dir_cache = Cache::new(cache_size, cache_ttl, drive.clone());
         debug!("dir cache initialized");
         let root = if root.starts_with('/') {
@@ -62,7 +62,7 @@ impl QuarkDriveFileSystem {
         Ok(Self {
             drive,
             dir_cache,
-            chunk_cache: crate::prefetch::new_chunk_cache(chunk_cache_bytes),
+            chunk_cache: crate::prefetch::new_chunk_cache(crate::prefetch::DEFAULT_CACHE_BYTES),
             uploading: Arc::new(DashMap::new()),
             root,
             no_trash: false,
@@ -72,6 +72,15 @@ impl QuarkDriveFileSystem {
             prefer_http_download: false,
             upload_wait_timeout: 280,
         })
+    }
+
+    /// 分块预取缓存的上限（字节）。0 = 关掉缓存（每个窗口各拉各的）。
+    ///
+    /// 和其它选项一样做成 setter 而不是 `new` 的参数：`new` 的签名是这个库的
+    /// 公开面，为一个可选项去动它，所有调用方都得跟着改。
+    pub fn set_chunk_cache_bytes(&mut self, bytes: u64) -> &mut Self {
+        self.chunk_cache = crate::prefetch::new_chunk_cache(bytes);
+        self
     }
 
     pub fn set_read_only(&mut self, read_only: bool) -> &mut Self {
