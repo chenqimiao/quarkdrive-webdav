@@ -15,7 +15,7 @@ use dav_server::{
     },
 };
 use futures_util::future::{ready, FutureExt};
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 use crate::{
     cache::Cache,
     drive::{QuarkDrive, QuarkFile},
@@ -644,6 +644,8 @@ struct QuarkDavFile {
     current_pos: u64,
     upload_state: UploadState,
     http_download: bool,
+    /// 滑动窗口预取器。见 prefetch.rs——单流被夸克压在 10 Mbps，并发能到 300。
+    prefetch: Option<crate::prefetch::Prefetcher>,
     md5_ctx: Md5Context,
     sha1_ctx: Sha1,
 }
@@ -675,6 +677,7 @@ impl QuarkDavFile {
             parent_file_id,
             parent_dir,
             current_pos: 0,
+            prefetch: None,
             upload_state: UploadState {
                 size,
                 sha1,
@@ -1335,12 +1338,62 @@ impl DavFile for QuarkDavFile {
                 }
             };
 
-            if !download_url.is_empty() {
-                let content = self.fs.drive.download(download_url, Some((self.current_pos, count))).await.unwrap();
-                self.current_pos += content.len() as u64;
-                return Ok(content);
-            }else {
+            if download_url.is_empty() {
                 return Err(FsError::NotFound);
+            }
+
+            /*
+                走预取窗口，而不是原来那种「一次读 = 一次上游请求」。
+
+                后者在夸克这里是最坏的访问模式：单条串行连接被限速压在 ~10 Mbps，
+                而同一个文件用 4 个并发拉连续区间实测 303 Mbps（见 prefetch.rs 的
+                文件头）。差 30 倍，而且**调 buffer size 和 cache TTL 都碰不到**
+                ——那些只改请求的形状，不改并发度。
+
+                窗口只在两种情况下重建：URL 换了（过期重取），或 pos 跳出窗口
+                （播放器 seek）。顺序播放时它一直往前滚。
+            */
+            let url = download_url.clone();
+            let size = self.file.size;
+            let pos = self.current_pos;
+
+            let usable = self
+                .prefetch
+                .as_ref()
+                .map(|p| p.serves(&url, pos))
+                .unwrap_or(false);
+            if !usable {
+                // 旧窗口在这里被 drop，它的 Drop 会 abort 掉在途请求——否则每次
+                // seek 都漏几条还在跑的连接给夸克，而它正是按连接限速的。
+                self.prefetch = Some(crate::prefetch::Prefetcher::new(
+                    self.fs.drive.clone(),
+                    url,
+                    size,
+                    pos,
+                ));
+            }
+
+            let got = self.prefetch.as_mut().unwrap().read(pos, count).await;
+            match got {
+                Some(content) if !content.is_empty() => {
+                    self.current_pos += content.len() as u64;
+                    Ok(content)
+                }
+                _ => {
+                    // 预取落空就退回原来那条路：慢，但能播完。上游偶发 5xx、直链
+                    // 正好在窗口中途过期都会走到这里，为一次抖动整个断流不值得。
+                    warn!(pos = pos, "prefetch miss, falling back to direct range read");
+                    self.prefetch = None;
+                    let fallback_url = self.file.download_url.clone().unwrap_or_default();
+                    let content = self
+                        .fs
+                        .drive
+                        .download(fallback_url, Some((pos, count)))
+                        .await
+                        .map_err(|_| FsError::NotFound)?;
+                    self.current_pos += content.len() as u64;
+                    Ok(content)
+                }
             }
         }
             .boxed()

@@ -19,6 +19,7 @@ use vfs::QuarkDriveFileSystem;
 use webdav::WebDavServer;
 
 mod cache;
+mod prefetch;
 mod drive;
 mod vfs;
 mod webdav;
