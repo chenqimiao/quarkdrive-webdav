@@ -36,6 +36,9 @@ use tokio::io::AsyncReadExt;
 pub struct QuarkDriveFileSystem {
     pub(crate) drive: QuarkDrive,
     pub(crate) dir_cache: Cache,
+    /// 已拉回的分块，按 (fid, 块号) 共享。见 prefetch.rs——**必须在这一层**，
+    /// 因为 dav-server 每个请求都新建一个 DavFile，挂在句柄上会随连接一起丢掉。
+    pub(crate) chunk_cache: crate::prefetch::ChunkCache,
     uploading: Arc<DashMap<String, Vec<QuarkFile>>>,
     pub(crate) root: PathBuf,
     no_trash: bool,
@@ -48,7 +51,7 @@ pub struct QuarkDriveFileSystem {
 
 impl QuarkDriveFileSystem {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(drive: QuarkDrive, root: String, cache_size: u64, cache_ttl: u64) -> Result<Self> {
+    pub fn new(drive: QuarkDrive, root: String, cache_size: u64, cache_ttl: u64, chunk_cache_bytes: u64) -> Result<Self> {
         let dir_cache = Cache::new(cache_size, cache_ttl, drive.clone());
         debug!("dir cache initialized");
         let root = if root.starts_with('/') {
@@ -59,6 +62,7 @@ impl QuarkDriveFileSystem {
         Ok(Self {
             drive,
             dir_cache,
+            chunk_cache: crate::prefetch::new_chunk_cache(chunk_cache_bytes),
             uploading: Arc::new(DashMap::new()),
             root,
             no_trash: false,
@@ -1368,6 +1372,8 @@ impl DavFile for QuarkDavFile {
                 self.prefetch = Some(crate::prefetch::Prefetcher::new(
                     self.fs.drive.clone(),
                     url,
+                    self.file.fid.clone(),
+                    self.fs.chunk_cache.clone(),
                     size,
                     pos,
                 ));

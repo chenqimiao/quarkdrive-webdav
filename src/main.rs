@@ -61,6 +61,11 @@ struct Opt {
     /// Directory entries cache expiration time in seconds
     #[arg(long, default_value = "600")]
     cache_ttl: u64,
+    /// 分块预取缓存的上限（MB）。见 prefetch.rs：播放器每隔十几秒换一条连接，
+    /// 缓存让新连接能命中上一条已经拉回的块，实测把上游放大比从 1.35× 压回 ~1.0×。
+    /// 内存换带宽——远程播放（受家宽上行限制）时这笔买卖尤其划算。
+    #[arg(long, env = "CHUNK_CACHE_MB", default_value = "128")]
+    chunk_cache_mb: u64,
     /// Root directory path
     #[arg(long, env = "WEBDAV_ROOT", default_value = "/")]
     root: String,
@@ -183,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
         _ => bail!("tls-cert and tls-key must be specified together."),
     };
     let drive = QuarkDrive::new(drive_config)?;
-    let mut fs = QuarkDriveFileSystem::new(drive, opt.root, opt.cache_size, opt.cache_ttl)?;
+    let mut fs = QuarkDriveFileSystem::new(drive, opt.root, opt.cache_size, opt.cache_ttl, opt.chunk_cache_mb * 1024 * 1024)?;
     fs.set_no_trash(opt.no_trash)
         .set_read_only(opt.read_only)
         .set_upload_buffer_size(opt.upload_buffer_size)

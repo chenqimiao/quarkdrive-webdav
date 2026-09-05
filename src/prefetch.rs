@@ -45,6 +45,43 @@ pub const CHUNK: u64 = 16 * 1024 * 1024;
 /// 同时在途几块。**不是越大越好**，8 并发实测反而更慢。
 pub const AHEAD: usize = 4;
 
+/// 已拉回的块，按 (fid, 块号) 共享。
+///
+/// **必须挂在文件系统层，不能挂在文件句柄上。** dav-server 每个 HTTP 请求都会走
+/// 一遍 `open()` 造一个新的 DavFile，而播放器（实测 Infuse）每隔十几秒就换一条
+/// 连接重发 range 请求。窗口跟着句柄一起死的话，已经拉回来但还没送出的块全部作废
+/// ——实测放大比 1.35×，即 26% 的上游流量是白拉的。
+///
+/// 在家里无所谓（下行富余），但远程时这 26% 是直接乘在家宽上行天花板上的。
+pub type ChunkCache = moka::future::Cache<(String, u64), Bytes>;
+
+/// 建一个按**字节数**限容的块缓存。
+///
+/// 用 weigher 而不是条数：块大小虽然名义上是 CHUNK，但文件最后一块会被截断，
+/// 按条数算会低估占用。
+pub fn new_chunk_cache(max_bytes: u64) -> ChunkCache {
+    moka::future::Cache::builder()
+        .max_capacity(max_bytes)
+        .weigher(|_k: &(String, u64), v: &Bytes| v.len().try_into().unwrap_or(u32::MAX))
+        // 直链本身几十分钟就过期，块留得比它久没有意义。
+        .time_to_live(std::time::Duration::from_secs(300))
+        .build()
+}
+
+/// 全局在途分块下载的上限。
+///
+/// 窗口被丢弃时**不再 abort 在途任务**（见 `Drop`），所以理论上快速连续 seek 会
+/// 攒出很多孤儿任务。这个信号量是那件事的兜底：不管有多少个窗口活着或死了，同时
+/// 真正在打夸克的分块请求不超过这个数。
+///
+/// 8 = AHEAD 的两倍：允许「上一个窗口正在收尾」和「新窗口已经启动」短暂重叠，
+/// 但不允许再多——夸克是按连接维度限速的。
+static DOWNLOAD_SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+
+fn slots() -> &'static tokio::sync::Semaphore {
+    DOWNLOAD_SLOTS.get_or_init(|| tokio::sync::Semaphore::new(AHEAD * 2))
+}
+
 /// 一块的取回任务：块号 + 它的 JoinHandle。
 struct Pending {
     index: u64,
@@ -54,6 +91,9 @@ struct Pending {
 pub struct Prefetcher {
     drive: QuarkDrive,
     url: String,
+    /// 文件 id。缓存键的一半——直链会换，fid 不会。
+    fid: String,
+    cache: ChunkCache,
     /// 文件总长。最后一块要按它截断，否则会向上游要超出文件末尾的 range。
     size: u64,
     /// 在途的块，按块号升序。
@@ -65,10 +105,19 @@ pub struct Prefetcher {
 }
 
 impl Prefetcher {
-    pub fn new(drive: QuarkDrive, url: String, size: u64, pos: u64) -> Self {
+    pub fn new(
+        drive: QuarkDrive,
+        url: String,
+        fid: String,
+        cache: ChunkCache,
+        size: u64,
+        pos: u64,
+    ) -> Self {
         let mut p = Self {
             drive,
             url,
+            fid,
+            cache,
             size,
             inflight: VecDeque::new(),
             next_index: pos / CHUNK,
@@ -110,8 +159,39 @@ impl Prefetcher {
             let len = std::cmp::min(CHUNK, self.size - start) as usize;
             let drive = self.drive.clone();
             let url = self.url.clone();
+            let cache = self.cache.clone();
+            let key = (self.fid.clone(), index);
+            /*
+                缓存查询放在**任务内部**，不在这里同步查。
+
+                这样窗口的结构完全不变——命中与否都是「一个会 resolve 出 Bytes 的
+                任务」，调用方不需要分两种情况。命中时这个任务几乎立即完成，代价只是
+                一次 spawn。
+            */
             let task = tokio::spawn(async move {
-                match drive.download(url, Some((start, len))).await {
+                /*
+                    `try_get_with` 而不是「先 get 再 insert」。
+
+                    差别是**单飞**：同一个 key 同时被多个任务要时，moka 只让一个真的
+                    去下载，其余的等它的结果。
+
+                    这一条是实测逼出来的。先 get 再 insert 的版本只把放大比从 2.41×
+                    降到 2.16×，因为它只挡得住**已完成**的块——而播放器换连接的时机
+                    恰恰是上一个窗口预读的块**还在途**的时候，于是新窗口对同一批块
+                    又下了一遍。缓存里没有，就都以为该自己去拉。
+                */
+                let res = cache
+                    .try_get_with(key, async move {
+                        // 名额在这里要，不在外面：命中或搭车的任务根本不打网络，
+                        // 不该占坑。
+                        let _permit = slots()
+                            .acquire()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("semaphore closed: {e}"))?;
+                        drive.download(url, Some((start, len))).await
+                    })
+                    .await;
+                match res {
                     Ok(b) => Some(b),
                     Err(e) => {
                         warn!(start = start, len = len, error = %e, "prefetch chunk failed");
@@ -169,14 +249,27 @@ impl Prefetcher {
 }
 
 impl Drop for Prefetcher {
-    /// seek 或换文件时窗口被丢弃——**必须显式取消在途任务**。
+    /// 窗口被丢弃时**不动在途任务**，让它们跑完。
     ///
-    /// 不取消的话，那几个请求会继续跑到完成才释放连接。播放器连续拖几次进度条，
-    /// 后台就积着十几条对夸克的下载连接——而夸克恰恰是按连接数和时长限速的，
-    /// 于是「拖动几次之后就变慢」，一个极难反推的症状。
+    /// 这一版和最初的写法相反，是被数据推翻的：最初这里 abort 掉所有在途请求，
+    /// 理由是「别给夸克堆连接」。听起来对，实测却是最贵的一种做法——
+    ///
+    /// **被预读的块正好就是连接关闭时还在途的那几块。** 播放器每十几秒换一条连接
+    /// （dav-server 每个请求新建一个 DavFile），abort 等于每次都把最该留下的数据
+    /// 扔掉。加了共享缓存也只把放大比从 2.41× 压到 2.16×，因为能进缓存的只有
+    /// 已经跑完的块。
+    ///
+    /// 改成让它们跑完之后，那几块会进缓存，下一条连接直接命中。连接数的兜底交给
+    /// `DOWNLOAD_SLOTS`——用信号量限并发，比用 abort 限并发精确得多，也不会误伤
+    /// 马上就要用到的数据。
     fn drop(&mut self) {
-        for p in &self.inflight {
-            p.task.abort();
-        }
+        // 故意不 abort：让它们跑完，结果进共享缓存。
+        //
+        // 最初这里是 abort，实测证明那是错的：被预读的块**正好就是**连接关闭时还在
+        // 途的那几块，abort 掉等于把最该留下的数据扔了。加了缓存也只降 10%
+        // （2.41× → 2.16×），因为进缓存的只有已完成的块。
+        //
+        // 放它们跑完之后，下一条连接（播放器十几秒就换一条）能直接命中。并发的
+        // 兜底交给 DOWNLOAD_SLOTS，不靠 abort。
     }
 }

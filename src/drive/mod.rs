@@ -93,8 +93,19 @@ impl QuarkDrive {
             .base(2)
             .build_with_max_retries(5);
 
-        let cpu_count = num_cpus::get();
-        let pool_size: usize = min(cpu_count.saturating_mul(2), 16).max(3);
+        /*
+            连接池按**实际并发度**定，不按 CPU 核数。
+
+            原来是 `min(cpu*2, 16)`。那个公式的假设是「并发请求数随核数增长」，
+            但这里的并发度是预取窗口定死的（AHEAD = 4），和有几个核没关系——
+            10 核机器上它开到 16，两个 client 加起来 32 条常驻空闲连接。
+
+            为什么要收：**夸克是按连接维度限速的**。一批空闲长连接不但没用，还可能
+            把账号推进限流档，而症状会表现成「用久了变慢」，几乎无法反推到这里。
+
+            +2 的余量留给目录列举和直链续期——它们和下载是并行的。
+        */
+        let pool_size: usize = crate::prefetch::AHEAD + 2;
 
         let client = reqwest::Client::builder()
             .user_agent(UA)
