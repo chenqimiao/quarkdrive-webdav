@@ -96,6 +96,19 @@ impl QuarkDrive {
         let cpu_count = num_cpus::get();
         let pool_size: usize = min(cpu_count.saturating_mul(2), 16).max(3);
 
+        /*
+            下载客户端的池单独算：它的并发度是**预取窗口定死的**（AHEAD），和 CPU
+            核数没关系。按 `min(cpu*2, 16)` 算的话，10 核机器上会开到 16 条常驻
+            空闲连接，而实际同时在跑的下载最多 AHEAD 条。
+
+            为什么要收：**夸克是按连接维度限速的**。多余的空闲长连接没有收益，却
+            可能把账号推进限流档——症状会表现成「用久了变慢」，几乎无法反推到这里。
+
+            +2 的余量给直链续期这类和下载并行的小请求。API 和上传走另一个 client，
+            不受这里影响。
+        */
+        let download_pool_size: usize = crate::prefetch::AHEAD + 2;
+
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .default_headers(headers.clone())
@@ -116,7 +129,7 @@ impl QuarkDrive {
             .default_headers(headers)
             // Enable connection pooling to avoid TCP handshake overhead on each request
             .pool_idle_timeout(Duration::from_secs(50))
-            .pool_max_idle_per_host(pool_size) // Increase pool size for concurrent downloads
+            .pool_max_idle_per_host(download_pool_size)
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(300)) // Increase timeout for large files
             .build()?;
