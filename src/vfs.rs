@@ -1376,8 +1376,9 @@ impl DavFile for QuarkDavFile {
                 .map(|p| p.serves(&url, pos))
                 .unwrap_or(false);
             if !usable {
-                // 旧窗口在这里被 drop，它的 Drop 会 abort 掉在途请求——否则每次
-                // seek 都漏几条还在跑的连接给夸克，而它正是按连接限速的。
+                // 旧窗口在这里被 drop。它的 Drop **不** abort 在途请求：让它们跑完
+                // 进共享缓存，下一条连接能直接命中；并发上限由 prefetch.rs 里的
+                // DOWNLOAD_SLOTS 信号量兜底。见 Prefetcher 的 Drop 注释。
                 self.prefetch = Some(crate::prefetch::Prefetcher::new(
                     self.fs.drive.clone(),
                     url,
